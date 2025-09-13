@@ -29,10 +29,8 @@ npm install dynaorm @aws-sdk/client-dynamodb @aws-sdk/util-dynamodb p-throttle z
 Use `defineSchema` to create a type-safe schema for your DynamoDB table. The schema defines the table name, keys, and fields, along with any global or local secondary indexes. The fields are defined using a Zod object.
 
 ```ts
-// schemas/user-schema.ts
-import { defineSchema, defineSchema } from "dynaorm";
-// schemas/product-schema.ts
-import { z, z } from "zod";
+import { defineSchema } from "dynaorm";
+import { z } from "zod";
 
 export const userSchema = defineSchema({
   tableName: "Users",
@@ -71,7 +69,7 @@ You can leverage DynaORM for full type safety by using the `InferSchema` utility
 ```ts
 import { InferSchema } from "dynaorm";
 
-import { productSchema, userSchema } from "./schemas"; // Assuming a central schemas index file
+import { productSchema, userSchema } from "./schemas";
 
 // Create a type for the User model
 export type User = InferSchema<typeof userSchema>;
@@ -94,7 +92,6 @@ const newUser: User = {
 The `createClient` function initializes a DynamoDB client and returns a type-safe object with a `Model` instance for each schema provided. You can configure options per model using `perModelOptions` or globally using `modelOptions`.
 
 ```ts
-// client.ts
 import { DynamoDBClientConfig } from "@aws-sdk/client-dynamodb";
 import { createClient } from "dynaorm";
 
@@ -136,7 +133,6 @@ export const client = createClient(schemas, {
 The `client` object provides access to each model, which exposes a set of methods for interacting with the database.
 
 ```ts
-// app.ts
 import { client } from "./client";
 
 async function run() {
@@ -186,7 +182,6 @@ run();
 Use the `query()` method to build complex, type-safe queries. This is useful for fetching items based on partition keys and optional sort key conditions.
 
 ```ts
-// app.ts
 import { client } from "./client";
 
 async function queryData() {
@@ -211,7 +206,6 @@ async function queryData() {
 The `scan()` method retrieves all items from a table. This is highly discouraged for large tables as it can be very expensive. Use it only for small tables or administrative tasks.
 
 ```ts
-// app.ts
 import { client } from "./client";
 
 async function scanData() {
@@ -232,7 +226,6 @@ async function scanData() {
 DynaORM provides convenient methods for performing batch reads and writes, which are more efficient for multiple items.
 
 ```ts
-// app.ts
 import { client } from "./client";
 
 async function batchOperations() {
@@ -264,7 +257,6 @@ async function batchOperations() {
 Interact with Global and Local Secondary Indexes using the `findByIndex`, `countByIndex`, and `deleteByIndex` methods.
 
 ```ts
-// app.ts
 import { client } from "./client";
 
 async function indexOperations() {
