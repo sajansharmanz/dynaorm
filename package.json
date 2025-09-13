@@ -15,6 +15,13 @@
     "email": "sajansharmanz@gmail.com",
     "url": "https://sajansharma.com"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sajansharmanz/dynaorm.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sajansharmanz/dynaorm/issues"
+  },
   "main": "dist/index.js",
   "exports": {
     ".": {
