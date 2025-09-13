@@ -1,0 +1,10 @@
+{
+  "recommendations": [
+    // ESLint
+    "dbaeumer.vscode-eslint",
+    // Pretter
+    "esbenp.prettier-vscode",
+    // Pretty TypeScript Errors
+    "YoavBls.pretty-ts-errors"
+  ]
+}

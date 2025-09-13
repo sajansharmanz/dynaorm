@@ -1,0 +1,64 @@
+{
+  "compilerOptions": {
+    /* --------------------------------------------------
+     * Base Options
+     * -------------------------------------------------- */
+    "target": "es2022",
+    "lib": ["es2022"],
+    "moduleDetection": "force",
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "allowJs": true,
+    "checkJs": true,
+
+    /* --------------------------------------------------
+     * Strictness & Type Checking
+     * -------------------------------------------------- */
+    "strict": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "noImplicitAny": true,
+    "noImplicitThis": true,
+    "noImplicitReturns": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "noUnusedParameters": true,
+    "noUnusedLocals": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "allowSyntheticDefaultImports": true,
+    "resolvePackageJsonExports": true,
+    "resolvePackageJsonImports": true,
+
+    /* --------------------------------------------------
+     * Output & Module Resolution
+     * -------------------------------------------------- */
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "rootDir": "src",
+    "outDir": "dist",
+    "sourceMap": true,
+    "incremental": true,
+    "tsBuildInfoFile": ".tsbuildinfo",
+
+    /* --------------------------------------------------
+     * Library / Package Builds
+     * -------------------------------------------------- */
+    "declaration": true,
+    "declarationMap": true,
+    "composite": true,
+
+    "types": ["vitest/globals"]
+  },
+
+  /* --------------------------------------------------
+   * Project Structure
+   * -------------------------------------------------- */
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
