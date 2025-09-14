@@ -102,59 +102,95 @@ export class QueryBuilder<
     return this;
   }
 
+  async count(): Promise<number> {
+    const {
+      ExpressionAttributeNames,
+      ExpressionAttributeValues,
+      KeyConditionExpression,
+      FilterExpression,
+    } = this.buildExpression();
+
+    const command = new QueryCommand({
+      TableName: this.model.tableName,
+      IndexName: this.indexName ? String(this.indexName) : undefined,
+      KeyConditionExpression,
+      FilterExpression: FilterExpression || undefined,
+      ExpressionAttributeNames,
+      ExpressionAttributeValues: marshall(ExpressionAttributeValues),
+      Select: "COUNT",
+    });
+
+    const result = await this.model.sendCommand<QueryCommandOutput>(command);
+    return result.Count ?? 0;
+  }
+
   // --------------------
   // Expression Builder
   // --------------------
   private buildExpression() {
     const ExpressionAttributeNames: Record<string, string> = {};
     const ExpressionAttributeValues: Record<string, any> = {};
+    const attributeNameMap = new Map<string, string>();
+    let nameCounter = 0;
+    let valueCounter = 0;
 
-    const KeyConditionExpression = this.keyConditions
-      .map((cond, i) => {
-        const attr = `#k${i}`;
-        ExpressionAttributeNames[attr] = cond.key;
+    const getAttributePlaceholder = (key: string) => {
+      if (!attributeNameMap.has(key)) {
+        const placeholder = `#a${nameCounter++}`;
+        attributeNameMap.set(key, placeholder);
+        ExpressionAttributeNames[placeholder] = key;
+      }
+      return attributeNameMap.get(key)!;
+    };
 
-        if (cond.operator === "BETWEEN") {
-          ExpressionAttributeValues[`:v${i}a`] = cond.value[0];
-          ExpressionAttributeValues[`:v${i}b`] = cond.value[1];
-          return `${attr} BETWEEN :v${i}a AND :v${i}b`;
-        }
+    const KeyConditionExpressions = this.keyConditions.map((cond) => {
+      const namePlaceholder = getAttributePlaceholder(cond.key);
+      if (cond.operator === "BETWEEN") {
+        const valuePlaceholder1 = `:v${valueCounter++}`;
+        const valuePlaceholder2 = `:v${valueCounter++}`;
+        ExpressionAttributeValues[valuePlaceholder1] = cond.value[0];
+        ExpressionAttributeValues[valuePlaceholder2] = cond.value[1];
+        return `${namePlaceholder} BETWEEN ${valuePlaceholder1} AND ${valuePlaceholder2}`;
+      }
+      if (cond.operator === "begins_with") {
+        const valuePlaceholder = `:v${valueCounter++}`;
+        ExpressionAttributeValues[valuePlaceholder] = cond.value;
+        return `begins_with(${namePlaceholder}, ${valuePlaceholder})`;
+      }
+      const valuePlaceholder = `:v${valueCounter++}`;
+      ExpressionAttributeValues[valuePlaceholder] = cond.value;
+      return `${namePlaceholder} ${cond.operator} ${valuePlaceholder}`;
+    });
 
-        if (cond.operator === "begins_with") {
-          ExpressionAttributeValues[`:v${i}`] = cond.value;
-          return `begins_with(${attr}, :v${i})`;
-        }
+    const KeyConditionExpression = KeyConditionExpressions.join(" AND ");
 
-        ExpressionAttributeValues[`:v${i}`] = cond.value;
-        return `${attr} ${cond.operator} :v${i}`;
-      })
-      .join(" AND ");
+    const FilterExpressions = this.filterConditions.map((cond, i) => {
+      const namePlaceholder = getAttributePlaceholder(cond.key);
+      let expr = "";
 
-    const FilterExpression = this.filterConditions
-      .map((cond, i) => {
-        const attr = `#f${i}`;
-        ExpressionAttributeNames[attr] = cond.key;
-        let expr = "";
+      if (
+        cond.operator === "attribute_exists" ||
+        cond.operator === "attribute_not_exists"
+      ) {
+        expr = `${cond.operator}(${namePlaceholder})`;
+      } else if (
+        cond.operator === "begins_with" ||
+        cond.operator === "contains"
+      ) {
+        const valuePlaceholder = `:v${valueCounter++}`;
+        ExpressionAttributeValues[valuePlaceholder] = cond.value;
+        expr = `${cond.operator}(${namePlaceholder}, ${valuePlaceholder})`;
+      } else {
+        const valuePlaceholder = `:v${valueCounter++}`;
+        ExpressionAttributeValues[valuePlaceholder] = cond.value;
+        expr = `${namePlaceholder} ${cond.operator} ${valuePlaceholder}`;
+      }
 
-        if (
-          cond.operator === "attribute_exists" ||
-          cond.operator === "attribute_not_exists"
-        ) {
-          expr = `${cond.operator}(${attr})`;
-        } else if (
-          cond.operator === "begins_with" ||
-          cond.operator === "contains"
-        ) {
-          ExpressionAttributeValues[`:f${i}`] = cond.value;
-          expr = `${cond.operator}(${attr}, :f${i})`;
-        } else {
-          ExpressionAttributeValues[`:f${i}`] = cond.value;
-          expr = `${attr} ${cond.operator} :f${i}`;
-        }
+      // Fix the join logic
+      return i > 0 ? `${cond.join} ${expr}` : expr;
+    });
 
-        return cond.join ? `${cond.join} ${expr}` : expr;
-      })
-      .join(" ");
+    const FilterExpression = FilterExpressions.join(" ");
 
     return {
       ExpressionAttributeNames,
