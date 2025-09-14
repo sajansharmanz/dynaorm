@@ -221,6 +221,42 @@ async function scanData() {
 }
 ```
 
+**Transactional Operations**
+
+The `transactWrite` method allows you to perform an all-or-nothing operation on up to 10 items. This is essential for maintaining data consistency.
+
+```ts
+import { User } from "./schemas";
+
+import { client } from "./client";
+
+async function transactOperations() {
+  const newUser1: User = {
+    userId: "transact-user-1",
+    createdAt: new Date().toISOString(),
+    email: "transact1@example.com",
+    username: "transactUser1",
+  };
+  const newUser2: User = {
+    userId: "transact-user-2",
+    createdAt: new Date().toISOString(),
+    email: "transact2@example.com",
+    username: "transactUser2",
+  };
+
+  try {
+    // Atomically create two new users
+    await client.users.transactWrite([
+      { type: "put", item: newUser1 },
+      { type: "put", item: newUser2 },
+    ]);
+    console.log("Users created in a single transaction.");
+  } catch (error) {
+    console.error("Transaction failed, no users were created:", error);
+  }
+}
+```
+
 **Batch Operations**
 
 DynaORM provides convenient methods for performing batch reads and writes, which are more efficient for multiple items.
@@ -284,24 +320,26 @@ async function indexOperations() {
 
 **`Model` Class**
 
-| Method                                | Description                                                           |
-| ------------------------------------- | --------------------------------------------------------------------- |
-| `create(item)`                        | Validates and creates a new item.                                     |
-| `findOne(key)`                        | Retrieves a single item by its primary key.                           |
-| `findMany(pkValue, [skCondition])`    | Queries for all items with a given partition key.                     |
-| `update(key, updates)`                | Updates specific attributes of an item.                               |
-| `delete(key)`                         | Deletes a single item by its primary key.                             |
-| `upsert(item)`                        | Creates or replaces an item.                                          |
-| `batchGet(keys)`                      | Retrieves multiple items in a single request.                         |
-| `batchWrite(items)`                   | Performs a mix of put and delete operations in a single request.      |
-| `upsertMany(items)`                   | Batch-upserts multiple items.                                         |
-| `deleteMany(pkValue, [skCondition])`  | Deletes multiple items with a given partition key.                    |
-| `findByIndex(indexName, keyValues)`   | Queries a secondary index.                                            |
-| `countByIndex(indexName, keyValues)`  | Counts items in a secondary index.                                    |
-| `exists(key)`                         | Checks if an item exists by its primary key.                          |
-| `countAll()`                          | Scans the table to count all items. Use with caution.                 |
-| `scan([filter], [limit], [startKey])` | Scans the table for items, with optional filtering. Use with caution. |
-| `query()`                             | Returns a QueryBuilder instance for building complex queries.         |
+| Method                             | Description                                                           |
+| ---------------------------------- | --------------------------------------------------------------------- |
+| create(item)                       | Validates and creates a new item.                                     |
+| findOne(key)                       | Retrieves a single item by its primary key.                           |
+| findMany(pkValue, [skCondition])   | Queries for all items with a given partition key.                     |
+| update(key, updates)               | Updates specific attributes of an item.                               |
+| delete(key)                        | Deletes a single item by its primary key.                             |
+| upsert(item)                       | Creates or replaces an item.                                          |
+| batchGet(keys)                     | Retrieves multiple items in a single request.                         |
+| batchWrite(items)                  | Performs a mix of put and delete operations in a single request.      |
+| upsertMany(items)                  | Batch-upserts multiple items.                                         |
+| deleteMany(pkValue, [skCondition]) | Deletes multiple items with a given partition key.                    |
+| findByIndex(indexName, keyValues)  | Queries a secondary index.                                            |
+| countByIndex(indexName, keyValues) | Counts items in a secondary index.                                    |
+| exists(key)                        | Checks if an item exists by its primary key.                          |
+| countAll()                         | Scans the table to count all items. Use with caution.                 |
+| scan([options])                    | Scans the table for items, with optional filtering. Use with caution. |
+| query()                            | Returns a QueryBuilder instance for building complex queries.         |
+| transactGet(keys)                  | Atomically retrieves a list of items.                                 |
+| transactWrite(items)               | Atomically performs put, update, or delete operations.                |
 
 **`QueryBuilder` Class**
 
@@ -314,3 +352,4 @@ async function indexOperations() {
 | `orderBy(asc)`                         | Sets the sort order (`true` for ascending, `false` for descending). |
 | `startKey(key)`                        | Starts the query from a specific key for pagination.                |
 | `exec()`                               | Executes the query and returns the results.                         |
+| `count()`                              | Executes the query and returns the item count.                      |
