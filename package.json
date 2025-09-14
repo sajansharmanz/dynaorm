@@ -1,6 +1,6 @@
 {
   "name": "dynaorm",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "A type-safe DynamoDB ORM",
   "keywords": [
     "AWS",
@@ -36,7 +36,7 @@
   ],
   "scripts": {
     "format": "prettier --write .",
-    "build": "tsc",
+    "build": "tsc --build",
     "dev": "tsc --watch",
     "test": "vitest --watch=false",
     "coverage": "vitest run --coverage --watch=false"
