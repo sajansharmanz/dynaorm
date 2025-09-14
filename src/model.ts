@@ -7,11 +7,14 @@ import {
   PutItemCommand,
   QueryCommand,
   ScanCommand,
+  TransactGetItemsCommand,
+  TransactWriteItemsCommand,
   UpdateItemCommand,
   type BatchGetItemCommandOutput,
   type GetItemCommandOutput,
   type QueryCommandOutput,
   type ScanCommandOutput,
+  type TransactGetItemsCommandOutput,
 } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import pThrottle from "p-throttle";
@@ -49,12 +52,12 @@ export type IndexKeySchema<
       : { [P in S["partitionKey"]]: InferSchema<S>[P] }
     : never;
 
-type Key<S extends Schema<any, any, any, any, any>> =
+export type Key<S extends Schema<any, any, any, any, any>> =
   S["sortKey"] extends undefined
     ? Pick<InferSchema<S>, S["partitionKey"]>
     : Pick<InferSchema<S>, S["partitionKey"] | NonNullable<S["sortKey"]>>;
 
-type PartitionKeyValue<S extends Schema<any, any, any, any, any>> =
+export type PartitionKeyValue<S extends Schema<any, any, any, any, any>> =
   S["partitionKey"] extends keyof InferSchema<S>
     ? InferSchema<S>[S["partitionKey"]]
     : never;
@@ -126,6 +129,36 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     };
   }
 
+  private buildUpdateExpression(updates: Partial<InferSchema<S>>) {
+    const UpdateExpression: string[] = [];
+    const ExpressionAttributeNames: Record<string, string> = {};
+    const ExpressionAttributeValues: Record<string, any> = {};
+    let i = 0;
+
+    for (const k in updates) {
+      const val = updates[k];
+      if (val !== undefined) {
+        UpdateExpression.push(`#k${i} = :v${i}`);
+        ExpressionAttributeNames[`#k${i}`] = k;
+        ExpressionAttributeValues[`:v${i}`] = val;
+        i++;
+      }
+    }
+    if (!UpdateExpression.length) {
+      return {
+        UpdateExpression: null,
+        ExpressionAttributeNames: null,
+        ExpressionAttributeValues: null,
+      };
+    }
+
+    return {
+      UpdateExpression: `SET ${UpdateExpression.join(", ")}`,
+      ExpressionAttributeNames,
+      ExpressionAttributeValues: this.marshallItem(ExpressionAttributeValues),
+    };
+  }
+
   public getIndex<I extends IndexName<S>>(indexName: I) {
     if (indexName in this.schema.globalSecondaryIndexes)
       return this.schema.globalSecondaryIndexes[
@@ -162,6 +195,26 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return result.Item ? (unmarshall(result.Item) as InferSchema<S>) : null;
   }
 
+  async findAll(): Promise<InferSchema<S>[]> {
+    const allItems: InferSchema<S>[] = [];
+    let ExclusiveStartKey: Record<string, any> | undefined = undefined;
+
+    do {
+      const result: ScanCommandOutput = await this.sendCommand(
+        new ScanCommand({
+          TableName: this.tableName,
+          ExclusiveStartKey,
+        }),
+      );
+      const items =
+        result.Items?.map((i) => unmarshall(i) as InferSchema<S>) || [];
+      allItems.push(...items);
+      ExclusiveStartKey = result.LastEvaluatedKey;
+    } while (ExclusiveStartKey);
+
+    return allItems;
+  }
+
   async findMany(
     partitionKeyValue: PartitionKeyValue<S>,
     sortKeyCondition?: { operator: KeyOperators; value: any | [any, any] },
@@ -176,29 +229,21 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     this.schema.fields.partial().parse(updates);
     this.validateKey(key);
 
-    const UpdateExpression: string[] = [];
-    const ExpressionAttributeNames: Record<string, string> = {};
-    const ExpressionAttributeValues: Record<string, any> = {};
-    let i = 0;
+    const {
+      UpdateExpression,
+      ExpressionAttributeNames,
+      ExpressionAttributeValues,
+    } = this.buildUpdateExpression(updates);
 
-    for (const k in updates) {
-      const val = updates[k];
-      if (val !== undefined) {
-        UpdateExpression.push(`#k${i} = :v${i}`);
-        ExpressionAttributeNames[`#k${i}`] = k;
-        ExpressionAttributeValues[`:v${i}`] = val;
-        i++;
-      }
-    }
-    if (!UpdateExpression.length) return;
+    if (!UpdateExpression) return;
 
     await this.sendCommand(
       new UpdateItemCommand({
         TableName: this.tableName,
         Key: this.marshallItem(key),
-        UpdateExpression: `SET ${UpdateExpression.join(", ")}`,
+        UpdateExpression,
         ExpressionAttributeNames,
-        ExpressionAttributeValues: this.marshallItem(ExpressionAttributeValues),
+        ExpressionAttributeValues,
       }),
     );
   }
@@ -221,6 +266,42 @@ export class Model<S extends Schema<any, any, any, any, any>> {
         Item: this.marshallItem(validated),
       }),
     );
+  }
+
+  async updateIf(
+    key: Key<S>,
+    updates: Partial<InferSchema<S>>,
+    conditionExpression: string,
+  ): Promise<boolean> {
+    this.schema.fields.partial().parse(updates);
+    this.validateKey(key);
+
+    const {
+      UpdateExpression,
+      ExpressionAttributeNames,
+      ExpressionAttributeValues,
+    } = this.buildUpdateExpression(updates);
+
+    if (!UpdateExpression) return false;
+
+    try {
+      await this.sendCommand(
+        new UpdateItemCommand({
+          TableName: this.tableName,
+          Key: this.marshallItem(key),
+          UpdateExpression,
+          ConditionExpression: conditionExpression,
+          ExpressionAttributeNames,
+          ExpressionAttributeValues,
+        }),
+      );
+      return true;
+    } catch (error: any) {
+      if (error.name === "ConditionalCheckFailedException") {
+        return false;
+      }
+      throw error;
+    }
   }
 
   // --------------------
@@ -281,7 +362,10 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     const items = await this.findMany(partitionKeyValue, sortKeyCondition);
     if (!items.length) return;
 
-    const batchOps = items.map((item) => ({ type: "delete" as const, item }));
+    const batchOps = items.map((item) => ({
+      type: "delete" as const,
+      item,
+    }));
     await this.batchWrite(batchOps);
   }
 
@@ -385,7 +469,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return new QueryBuilder(this);
   }
 
-  async scan(
+  async scanAll(
     filter?: Partial<InferSchema<S>>,
     limit?: number,
     startKey?: Record<string, any>,
@@ -394,21 +478,23 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     const results: InferSchema<S>[] = [];
     let remaining = limit ?? Infinity;
 
+    const FilterExpression = filter
+      ? Object.keys(filter)
+          .map((_k, i) => `#k${i} = :v${i}`)
+          .join(" AND ")
+      : undefined;
+    const ExpressionAttributeNames = filter
+      ? Object.fromEntries(Object.keys(filter).map((k, i) => [`#k${i}`, k]))
+      : undefined;
+    const ExpressionAttributeValues = filter ? marshall(filter) : undefined;
+
     do {
       const result: ScanCommandOutput = await this.sendCommand(
         new ScanCommand({
           TableName: this.tableName,
-          FilterExpression: filter
-            ? Object.keys(filter)
-                .map((_k, i) => `#k${i} = :v${i}`)
-                .join(" AND ")
-            : undefined,
-          ExpressionAttributeNames: filter
-            ? Object.fromEntries(
-                Object.keys(filter).map((k, i) => [`#k${i}`, k]),
-              )
-            : undefined,
-          ExpressionAttributeValues: filter ? marshall(filter) : undefined,
+          FilterExpression,
+          ExpressionAttributeNames,
+          ExpressionAttributeValues,
           ExclusiveStartKey,
           Limit: remaining,
         }),
@@ -421,6 +507,34 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     } while (ExclusiveStartKey && remaining > 0);
 
     return { items: results, lastKey: ExclusiveStartKey };
+  }
+
+  async scan(options?: {
+    filter?: Partial<InferSchema<S>>;
+    limit?: number;
+    startKey?: Record<string, any>;
+  }): Promise<{ items: InferSchema<S>[]; lastKey?: Record<string, any> }> {
+    const { filter, limit, startKey } = options || {};
+    const result: ScanCommandOutput = await this.sendCommand(
+      new ScanCommand({
+        TableName: this.tableName,
+        FilterExpression: filter
+          ? Object.keys(filter)
+              .map((_k, i) => `#k${i} = :v${i}`)
+              .join(" AND ")
+          : undefined,
+        ExpressionAttributeNames: filter
+          ? Object.fromEntries(Object.keys(filter).map((k, i) => [`#k${i}`, k]))
+          : undefined,
+        ExpressionAttributeValues: filter ? marshall(filter) : undefined,
+        ExclusiveStartKey: startKey,
+        Limit: limit,
+      }),
+    );
+
+    const items =
+      result.Items?.map((i) => unmarshall(i) as InferSchema<S>) || [];
+    return { items, lastKey: result.LastEvaluatedKey };
   }
 
   // --------------------
@@ -451,13 +565,119 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     partitionKeyValue: PartitionKeyValue<S>,
     sortKeyCondition?: { operator: KeyOperators; value: any | [any, any] },
   ): Promise<number> {
-    const q = this.query().where(this.partitionKey, "=", partitionKeyValue);
+    const query = this.query().where(this.partitionKey, "=", partitionKeyValue);
 
     if (this.sortKey && sortKeyCondition) {
-      q.where(this.sortKey, sortKeyCondition.operator, sortKeyCondition.value);
+      query.where(
+        this.sortKey,
+        sortKeyCondition.operator,
+        sortKeyCondition.value,
+      );
     }
 
-    const results = await q.exec();
-    return results.length;
+    return query.count();
+  }
+
+  async deleteByPartitionKey(
+    partitionKeyValue: PartitionKeyValue<S>,
+  ): Promise<void> {
+    const itemsToDelete = await this.findMany(partitionKeyValue);
+    if (!itemsToDelete.length) return;
+
+    const batchOps = itemsToDelete.map((item) => ({
+      type: "delete" as const,
+      item: {
+        [this.partitionKey]: item[this.partitionKey],
+        ...(this.sortKey && { [this.sortKey]: item[this.sortKey] }),
+      } as Key<S>,
+    }));
+    await this.batchWrite(batchOps);
+  }
+
+  // --------------------
+  // Transact Operations
+  // --------------------
+  async transactGet(
+    keys: Array<Key<S>>,
+  ): Promise<Array<InferSchema<S> | null>> {
+    if (!keys.length) return [];
+    keys.forEach((k) => this.validateKey(k));
+
+    const result = await this.sendCommand<TransactGetItemsCommandOutput>(
+      new TransactGetItemsCommand({
+        TransactItems: keys.map((k) => ({
+          Get: {
+            TableName: this.tableName,
+            Key: this.marshallItem(k),
+          },
+        })),
+      }),
+    );
+
+    return (
+      result.Responses?.map((r) =>
+        r.Item ? (unmarshall(r.Item) as InferSchema<S>) : null,
+      ) || []
+    );
+  }
+
+  async transactWrite(
+    items: Array<
+      | { type: "put"; item: InferSchema<S>; condition?: string }
+      | {
+          type: "update";
+          item: Partial<InferSchema<S>>;
+          key: Key<S>;
+          condition?: string;
+        }
+      | { type: "delete"; key: Key<S>; condition?: string }
+    >,
+  ): Promise<void> {
+    if (!items.length) return;
+
+    const TransactItems = items.map((op) => {
+      if (op.type === "put") {
+        this.schema.fields.parse(op.item);
+        return {
+          Put: {
+            TableName: this.tableName,
+            Item: this.marshallItem(op.item),
+            ConditionExpression: op.condition,
+          },
+        };
+      } else if (op.type === "update") {
+        const {
+          UpdateExpression,
+          ExpressionAttributeNames,
+          ExpressionAttributeValues,
+        } = this.buildUpdateExpression(op.item);
+        if (!UpdateExpression) {
+          throw new Error(
+            "Update operation in transactWrite requires at least one attribute to update.",
+          );
+        }
+        return {
+          Update: {
+            TableName: this.tableName,
+            Key: this.marshallItem(op.key),
+            UpdateExpression,
+            ExpressionAttributeNames,
+            ExpressionAttributeValues,
+            ConditionExpression: op.condition,
+          },
+        };
+      } else {
+        this.validateKey(op.key);
+        return {
+          Delete: {
+            TableName: this.tableName,
+            Key: this.marshallItem(op.key),
+            ConditionExpression: op.condition,
+          },
+        };
+      }
+    });
+
+    await this.sendCommand(new TransactWriteItemsCommand({ TransactItems }));
   }
 }
