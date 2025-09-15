@@ -11,7 +11,6 @@ import {
   type BatchGetItemCommandOutput,
   type GetItemCommandOutput,
   type PutItemCommandOutput,
-  type QueryCommandOutput,
   type ScanCommandOutput,
   type TransactGetItemsCommandOutput,
 } from "@aws-sdk/client-dynamodb";
