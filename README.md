@@ -192,41 +192,161 @@ const taggedPosts = await dynaClient.posts.findByIndex(
 
 ---
 
-### `model.query()`
+### `model.query()` – Fluent, Schema-Aware Query Builder
 
-Initializes the **fluent query builder** (`QueryBuilder`) for more advanced queries.
+The `QueryBuilder` provides a type-safe, chainable API for building complex queries on your DynamoDB tables. All keys and filter values are validated against the schema, ensuring correct types at compile time.
 
-**QueryBuilder Notes:**
-
-- Supports chainable methods:
-  - `.where(partitionKey, "=", value, sortKey?)` – specify partition and sort key conditions.
-  - `.filter(attribute, operator, value, join)` – add filter conditions with optional `AND`/`OR`.
-  - `.limit(number)` – restrict number of results.
-  - `.orderBy(true|false)` – ascending/descending order on sort key.
-  - `.project(attributes)` – project specific attributes.
-  - `.onIndex(indexName)` – query a secondary index.
-  - `.consistentRead(true|false)` – use consistent reads.
-  - `.select(mode)` – specify `ALL_ATTRIBUTES`, `ALL_PROJECTED_ATTRIBUTES`, `COUNT`, or `SPECIFIC_ATTRIBUTES`.
-  - `.returnConsumedCapacity(mode)` – `INDEXES`, `TOTAL`, or `NONE`.
+#### Basic Usage
 
 ```ts
 const posts = await dynaClient.posts
   .query()
-  .where("authorId", "=", "author-123", {
+  .where("authorId", "author-123") // partition key
+  .limit(10) // limit number of results
+  .exec();
+```
+
+---
+
+#### Sort Key Conditions
+
+You can optionally filter by the sort key with any valid operator except `"="` (reserved for partition keys):
+
+```ts
+const posts = await dynaClient.posts
+  .query()
+  .where("authorId", "author-123", {
     key: "postId",
     operator: "begins_with",
     value: "post-",
   })
-  .filter("tags", "contains", "programming")
-  .limit(10)
   .exec();
 ```
 
-**Notes on QueryBuilder:**
+Supported sort key operators: `<`, `<=`, `>`, `>=`, `<>`, `BETWEEN`, `begins_with`.
 
-- Builds `KeyConditionExpression`, `FilterExpression`, and `ProjectionExpression` automatically.
-- Supports all common DynamoDB operators, including `begins_with`, `contains`, `IN`, `attribute_exists`, `attribute_not_exists`.
-- Automatically generates unique placeholders for attribute names and values to avoid conflicts.
+---
+
+#### Filter Conditions
+
+Add filters with `AND` / `OR` joins. Values are automatically type-checked against your schema.
+
+```ts
+const posts = await dynaClient.posts
+  .query()
+  .where("authorId", "author-123")
+  .filter("tags", "contains", "programming") // single value
+  .filter("count", ">", 10) // numeric comparison
+  .filter("tags", "IN", ["typescript", "webdev"]) // array of valid type
+  .exec();
+```
+
+Supported operators:
+`=`, `<>`, `<`, `>`, `<=`, `>=`, `contains`, `begins_with`, `IN`, `attribute_exists`, `attribute_not_exists`.
+
+---
+
+#### Secondary Index Queries
+
+Type-safe index queries using schema-defined GSI/LSI names:
+
+```ts
+const posts = await dynaClient.posts
+  .query()
+  .where("tags", "typescript")
+  .onIndex("postsByTags") // type-safe index name
+  .limit(5)
+  .exec();
+```
+
+---
+
+#### Projection of Attributes
+
+Project only the attributes you need. Type-checked against your schema:
+
+```ts
+const posts = await dynaClient.posts
+  .query()
+  .where("authorId", "author-123")
+  .project(["postId", "title"]) // only selected attributes returned
+  .exec();
+```
+
+---
+
+#### Ordering & Pagination
+
+```ts
+const posts = await dynaClient.posts
+  .query()
+  .where("authorId", "author-123")
+  .orderBy(true) // ascending (default: true)
+  .startKey({ authorId: "author-123", postId: "post-42" }) // pagination
+  .exec();
+```
+
+---
+
+#### Consistent Reads & Select Mode
+
+```ts
+const posts = await dynaClient.posts
+  .query()
+  .where("authorId", "author-123")
+  .consistentRead(true) // strongly consistent read
+  .select("ALL_ATTRIBUTES") // choose what to return
+  .exec();
+```
+
+`select` modes:
+
+- `ALL_ATTRIBUTES` – full items
+- `ALL_PROJECTED_ATTRIBUTES` – index projection only
+- `SPECIFIC_ATTRIBUTES` – only attributes selected via `.project()`
+- `COUNT` – returns only the count of matching items
+
+---
+
+#### Return Consumed Capacity
+
+```ts
+const posts = await dynaClient.posts
+  .query()
+  .where("authorId", "author-123")
+  .returnConsumedCapacity("TOTAL")
+  .exec();
+```
+
+Options: `"INDEXES" | "TOTAL" | "NONE"`
+
+---
+
+#### Full Example
+
+```ts
+const posts = await dynaClient.posts
+  .query()
+  .where("authorId", "author-123", {
+    key: "postId",
+    operator: "begins_with",
+    value: "post-",
+  })
+  .filter("tags", "IN", ["typescript", "programming"])
+  .onIndex("postsByTags")
+  .project(["postId", "title", "tags"])
+  .orderBy(false)
+  .limit(10)
+  .consistentRead(true)
+  .returnConsumedCapacity("TOTAL")
+  .exec();
+```
+
+**Notes:**
+
+- All keys and filter values are **validated against the schema** at compile time.
+- Placeholders for DynamoDB attribute names and values are **auto-generated** to prevent conflicts.
+- Fully supports **partition key, sort key, filters, secondary indexes, projections, pagination, and DynamoDB operators**.
 
 ---
 

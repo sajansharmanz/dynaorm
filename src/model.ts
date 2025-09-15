@@ -31,6 +31,39 @@ export type PartitionKeyValue<S extends Schema<any, any, any, any, any>> =
     ? InferSchema<S>[S["partitionKey"]]
     : never;
 
+type IndexKey<
+  S extends Schema<any, any, any, any, any>,
+  I extends
+    | keyof S["globalSecondaryIndexes"]
+    | keyof S["localSecondaryIndexes"],
+> = I extends keyof S["globalSecondaryIndexes"]
+  ? S["globalSecondaryIndexes"][I] extends {
+      partitionKey: keyof InferSchema<S>;
+      sortKey?: keyof InferSchema<S>;
+    }
+    ? S["globalSecondaryIndexes"][I]["sortKey"] extends keyof InferSchema<S>
+      ? Pick<
+          InferSchema<S>,
+          | S["globalSecondaryIndexes"][I]["partitionKey"]
+          | S["globalSecondaryIndexes"][I]["sortKey"]
+        >
+      : Pick<InferSchema<S>, S["globalSecondaryIndexes"][I]["partitionKey"]>
+    : never
+  : I extends keyof S["localSecondaryIndexes"]
+    ? S["localSecondaryIndexes"][I] extends {
+        partitionKey: keyof InferSchema<S>;
+        sortKey?: keyof InferSchema<S>;
+      }
+      ? S["localSecondaryIndexes"][I]["sortKey"] extends keyof InferSchema<S>
+        ? Pick<
+            InferSchema<S>,
+            | S["localSecondaryIndexes"][I]["partitionKey"]
+            | S["localSecondaryIndexes"][I]["sortKey"]
+          >
+        : Pick<InferSchema<S>, S["localSecondaryIndexes"][I]["partitionKey"]>
+      : never
+    : never;
+
 export interface ModelOptions {
   throttle?: { limit: number; interval: number };
 }
@@ -104,6 +137,32 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     if (indexName in this.schema.localSecondaryIndexes)
       return this.schema.localSecondaryIndexes[indexName];
     throw new Error(`Index ${indexName} does not exist`);
+  }
+
+  private getIndexKeyValues(
+    indexName: string,
+    itemOrKey: Partial<InferSchema<S>>,
+  ) {
+    const index = this.getIndex(indexName);
+    const keyValues: Record<string, any> = {};
+
+    if (!(index.partitionKey in itemOrKey)) {
+      throw new Error(
+        `Partition key '${index.partitionKey}' for index '${indexName}' is missing`,
+      );
+    }
+    keyValues[index.partitionKey] = itemOrKey[index.partitionKey];
+
+    if (index.sortKey) {
+      if (!(index.sortKey in itemOrKey)) {
+        throw new Error(
+          `Sort key '${index.sortKey}' for index '${indexName}' is missing`,
+        );
+      }
+      keyValues[index.sortKey] = itemOrKey[index.sortKey];
+    }
+
+    return keyValues;
   }
 
   private getNameHelper() {
@@ -392,17 +451,21 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return options?.limit ? results.slice(0, options.limit) : results;
   }
 
-  async findByIndex<I extends string>(
+  async findByIndex<
+    I extends
+      | keyof S["globalSecondaryIndexes"]
+      | keyof S["localSecondaryIndexes"],
+  >(
     indexName: I,
-    keyValues: Record<string, any>,
+    keyValues: IndexKey<S, I>,
     options?: {
       limit?: number;
       consistentRead?: boolean;
       attributes?: Array<keyof InferSchema<S>>;
       operators?: Record<string, KeyOperators>;
     },
-  ) {
-    this.getIndex(indexName);
+  ): Promise<InferSchema<S>[]> {
+    this.getIndex(String(indexName));
     const projection = this.buildProjectionExpression(options?.attributes);
     const results: InferSchema<S>[] = [];
 
@@ -426,13 +489,63 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return options?.limit ? results.slice(0, options.limit) : results;
   }
 
+  async deleteByIndex<
+    I extends
+      | keyof S["globalSecondaryIndexes"]
+      | keyof S["localSecondaryIndexes"],
+  >(indexName: I, keyValues: IndexKey<S, I>) {
+    const items = await this.findByIndex(indexName, keyValues);
+    if (!items.length) return;
+
+    const batchOps = items.map((item) => ({
+      type: "delete" as const,
+      key: {
+        [this.partitionKey]: item[this.partitionKey],
+        ...(this.sortKey ? { [this.sortKey]: item[this.sortKey] } : {}),
+      } as Key<S>,
+    }));
+
+    if (batchOps.length <= 100) {
+      await this.transactWrite(batchOps);
+    } else {
+      console.warn("deleteByIndex is not atomic for >100 items");
+      await this.batchWrite(
+        batchOps.map((op) => ({ type: "delete" as const, item: op.key })),
+      );
+    }
+  }
+
+  async updateByIndex<
+    I extends
+      | keyof S["globalSecondaryIndexes"]
+      | keyof S["localSecondaryIndexes"],
+  >(
+    indexName: I,
+    keyValues: IndexKey<S, I>,
+    updates: Partial<{
+      [K in keyof InferSchema<S>]: AtomicValue<InferSchema<S>[K]>;
+    }>,
+  ) {
+    const items = await this.findByIndex(indexName, keyValues);
+    if (!items.length) return;
+
+    const updateOps = items.map((item) => ({
+      key: {
+        [this.partitionKey]: item[this.partitionKey],
+        ...(this.sortKey ? { [this.sortKey]: item[this.sortKey] } : {}),
+      } as Key<S>,
+      updates,
+    }));
+
+    await this.updateMany(updateOps);
+  }
+
   async scanAll(options?: {
-    filter?: Partial<
-      Record<
-        keyof InferSchema<S>,
-        { operator: FilterOperators; value: any } | any
-      >
-    >;
+    filter?: {
+      [K in keyof InferSchema<S>]?:
+        | { operator: FilterOperators; value: InferSchema<S>[K] }
+        | InferSchema<S>[K];
+    };
     limit?: number;
     startKey?: Record<string, any>;
     attributes?: Array<keyof InferSchema<S>>;
@@ -647,7 +760,12 @@ export class Model<S extends Schema<any, any, any, any, any>> {
   }
 
   async updateMany(
-    items: Array<{ key: Key<S>; updates: Record<string, AtomicValue<any>> }>,
+    items: Array<{
+      key: Key<S>;
+      updates: Partial<{
+        [K in keyof InferSchema<S>]: AtomicValue<InferSchema<S>[K]>;
+      }>;
+    }>,
   ) {
     if (!items.length) return;
     const chunksOf25 = chunk(items, 25);
