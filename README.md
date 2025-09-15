@@ -1,355 +1,264 @@
 # DynaORM
 
-A simple, type-safe DynamoDB ORM built with TypeScript and Zod. DynaORM simplifies interactions with AWS DynamoDB by providing a clean, object-oriented interface, strong typing,
+DynaORM is a lightweight, type-safe Object-Relational Mapper (ORM) for Amazon DynamoDB. It's built with TypeScript and Zod, providing a fluent API for defining schemas and interacting with your DynamoDB tables.
 
-## 🚀 Features
+## Features ✨
 
-- **Type-Safe**: Built with TypeScript and Zod to provide end-to-end type safety from schema definition to database queries.
+- **Type-Safe Schemas**: Define your data models using Zod, ensuring type safety from schema definition to database interaction.
 
-- **Zod Integration**: Leverage the power of Zod for schema validation and infer types directly from your schemas.
+- **Fluent Query Builder**: Construct complex queries with a chainable API.
 
-- **Simple API**: A clean, easy-to-use API for common CRUD (Create, Read, Update, Delete) and batch operations.
+- **Comprehensive CRUD**: Supports create, findOne, findMany, update, delete, scan, and more.
 
-- **Flexible** Queries: Build complex queries using a fluid QueryBuilder for both tables and indexes.
+- **Batch & Transactional Operations**: Seamlessly handle batch and transactional writes and gets for multiple items.
 
-- **Configurable**: Supports per-model or global throttling and custom AWS DynamoDB client configurations.
+- **Index Support**: Define and use Global and Local Secondary Indexes effortlessly.
 
-## 📦 Installation
+- **Throttling**: Built-in support for throttling to manage your DynamoDB request limits.
 
-To get started, add DynaORM and its peer dependencies to your project:
+---
 
-```bash
-npm install dynaorm @aws-sdk/client-dynamodb @aws-sdk/util-dynamodb p-throttle zod
+## Installation
+
+```sh
+npm install dynaorm zod @aws-sdk/client-dynamodb @aws-sdk/util-dynamodb
 ```
 
-## 🛠️ Usage
+---
+
+## Getting Started
 
 **1. Define Your Schema**
 
-Use `defineSchema` to create a type-safe schema for your DynamoDB table. The schema defines the table name, keys, and fields, along with any global or local secondary indexes. The fields are defined using a Zod object.
+Use `defineSchema` from `dynaorm` and `z` from `zod` to create your data model.
 
 ```ts
 import { defineSchema } from "dynaorm";
 import { z } from "zod";
 
-export const userSchema = defineSchema({
-  tableName: "Users",
-  partitionKey: "userId",
-  sortKey: "createdAt",
+const userSchema = defineSchema({
+  tableName: "users",
+  partitionKey: "id",
   fields: z.object({
-    userId: z.string().uuid(),
-    createdAt: z.string().datetime(),
+    id: z.string().uuid(),
+    username: z.string().min(3),
     email: z.string().email(),
-    username: z.string().min(3).max(20),
-    age: z.number().optional(),
+    age: z.number().int().positive().optional(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime().optional(),
   }),
 });
 
-export const productSchema = defineSchema({
-  tableName: "Products",
-  partitionKey: "productId",
+const postSchema = defineSchema({
+  tableName: "posts",
+  partitionKey: "authorId",
+  sortKey: "postId",
   fields: z.object({
-    productId: z.string().uuid(),
-    name: z.string(),
-    price: z.number(),
-    category: z.string(),
+    authorId: z.string().uuid(),
+    postId: z.string().uuid(),
+    title: z.string(),
+    content: z.string(),
+    tags: z.array(z.string()).default([]),
+    createdAt: z.string().datetime(),
   }),
   globalSecondaryIndexes: {
-    byCategory: {
-      partitionKey: "category",
+    postsByTags: {
+      partitionKey: "tags",
+      projection: { type: "ALL" },
     },
   },
 });
-```
-
-**Type Inference 🤝**
-
-You can leverage DynaORM for full type safety by using the `InferSchema` utility type. Since `InferSchema` is exported directly from the main package, you can easily create types for your schema models without needing a separate codegen step. This allows you to define type-safe data and functions that work seamlessly with your DynamoDB models.
-
-```ts
-import { InferSchema } from "dynaorm";
-
-import { productSchema, userSchema } from "./schemas";
-
-// Create a type for the User model
-export type User = InferSchema<typeof userSchema>;
-
-// Create a type for the Product model
-export type Product = InferSchema<typeof productSchema>;
-
-// Example usage with a typed object
-const newUser: User = {
-  userId: "0f4a8e2d-3c2b-4d1a-8e2b-4a5c9f8d7e6f",
-  createdAt: new Date().toISOString(),
-  email: "test@example.com",
-  username: "testuser",
-  age: 25,
-};
 ```
 
 **2. Create the Client**
 
-The `createClient` function initializes a DynamoDB client and returns a type-safe object with a `Model` instance for each schema provided. You can configure options per model using `perModelOptions` or globally using `modelOptions`.
+Instantiate your DynamoDB client and create the `dynaorm` client with your defined schemas.
 
 ```ts
-import { DynamoDBClientConfig } from "@aws-sdk/client-dynamodb";
 import { createClient } from "dynaorm";
 
-import { productSchema } from "./schemas/product-schema";
-import { userSchema } from "./schemas/user-schema";
-
-const schemas = {
-  users: userSchema,
-  products: productSchema,
-};
-
-const clientConfig: DynamoDBClientConfig = {
-  region: "ap-southeast-2",
-};
-
-export const client = createClient(schemas, {
-  config: clientConfig,
-  // Optional: Global throttling for all models
-  modelOptions: {
-    throttle: {
-      limit: 10,
-      interval: 1000,
+const dynaClient = createClient(
+  {
+    users: userSchema,
+    posts: postSchema,
+  },
+  {
+    config: {
+      region: "us-east-1",
+    },
+    modelOptions: {
+      throttle: { limit: 10, interval: 1000 }, // 10 requests per second
     },
   },
-  // Optional: Per-model throttling to override global settings
-  perModelOptions: {
-    users: {
-      throttle: {
-        limit: 5, // A different throttle limit for the 'users' model
-        interval: 1000,
-      },
-    },
-  },
+);
+
+// Access your models
+const userModel = dynaClient.users;
+const postModel = dynaClient.posts;
+```
+
+---
+
+# API Reference
+
+## `createClient(schemas, options)`
+
+Creates the main client instance with access to all your defined models.
+
+**Parameters:**
+
+- `schemas`: A record of schema names to their `defineSchema` results.
+- `options`:
+  - `config`: AWS SDK `DynamoDBClientConfig`.
+  - `modelOptions` (Optional): Default options applied to all models.
+  - `throttle`: `{ limit: number; interval: number }` object for throttling requests.
+  - `perModelOptions` (Optional): Per-model overrides for `modelOptions`.
+
+---
+
+## Model API
+
+The `Model` class provides the core methods for interacting with a DynamoDB table.
+
+### `model.create(item)`
+
+Creates a new item in the table. Validates the item against the schema.
+
+```ts
+const newUser = await dynaClient.users.create({
+  id: "some-uuid",
+  username: "johndoe",
+  email: "john@example.com",
+  createdAt: new Date().toISOString(),
 });
 ```
 
-**3. Perform CRUD Operations**
+---
 
-The `client` object provides access to each model, which exposes a set of methods for interacting with the database.
+### `model.findOne(key, options)`
 
-```ts
-import { client } from "./client";
+Retrieves a single item by primary key. Returns `null` if not found.
 
-async function run() {
-  // Create a new item
-  const newUser = {
-    userId: "0f4a8e2d-3c2b-4d1a-8e2b-4a5c9f8d7e6f",
-    createdAt: new Date().toISOString(),
-    email: "test@example.com",
-    username: "testuser",
-  };
-  await client.users.create(newUser);
-  console.log("User created successfully!");
+**Options:**
 
-  // Find a single item by key
-  const user = await client.users.findOne({
-    userId: newUser.userId,
-    createdAt: newUser.createdAt,
-  });
-  console.log("Found user:", user);
-
-  // Update an item
-  await client.users.update(
-    { userId: newUser.userId, createdAt: newUser.createdAt },
-    { age: 30 },
-  );
-  const updatedUser = await client.users.findOne({
-    userId: newUser.userId,
-    createdAt: newUser.createdAt,
-  });
-  console.log("Updated user:", updatedUser);
-
-  // Delete an item
-  await client.users.delete({
-    userId: newUser.userId,
-    createdAt: newUser.createdAt,
-  });
-  console.log("User deleted.");
-}
-
-run();
-```
-
-## 📚 Advanced Operations
-
-**Querying**
-
-Use the `query()` method to build complex, type-safe queries. This is useful for fetching items based on partition keys and optional sort key conditions.
+- `attributes`: Optional array of attributes to project.
+- `consistentRead`: Optional boolean for consistent reads.
 
 ```ts
-import { client } from "./client";
-
-async function queryData() {
-  const userId = "0f4a8e2d-3c2b-4d1a-8e2b-4a5c9f8d7e6f";
-
-  // Find all items for a partition key
-  const userItems = await client.users.findMany(userId);
-
-  // Use the QueryBuilder for more control
-  const recentUsers = await client.users
-    .query()
-    .where("userId", "=", userId)
-    .where("createdAt", ">", "2024-01-01T00:00:00Z")
-    .exec();
-
-  console.log("Recent users:", recentUsers);
-}
+const user = await dynaClient.users.findOne({ id: "some-uuid" });
 ```
 
-**Scanning**
+---
 
-The `scan()` method retrieves all items from a table. This is highly discouraged for large tables as it can be very expensive. Use it only for small tables or administrative tasks.
+### `model.findMany(partitionKeyValue, sortKeyCondition, options)`
+
+Queries multiple items sharing the same partition key.
+
+**Parameters:**
+
+- `partitionKeyValue`: Partition key value.
+- `sortKeyCondition` (Optional): `{ operator, value }` for the sort key.
+- `options`:
+  - `limit`: Maximum number of items to return.
+  - `consistentRead`: Boolean for consistent reads.
+  - `attributes`: Attributes to project.
 
 ```ts
-import { client } from "./client";
-
-async function scanData() {
-  // Scan with a filter
-  const { items: products } = await client.products.scan({
-    category: "electronics",
-  });
-  console.log("Electronics products:", products);
-
-  // Scan all items with a limit
-  const { items: limitedItems } = await client.products.scan(undefined, 10);
-  console.log("First 10 products:", limitedItems);
-}
+const posts = await dynaClient.posts.findMany("author-123", {
+  operator: "begins_with",
+  value: "post-",
+});
 ```
 
-**Transactional Operations**
+---
 
-The `transactWrite` method allows you to perform an all-or-nothing operation on up to 10 items. This is essential for maintaining data consistency.
+### `model.findByIndex(indexName, keyValues, options)`
+
+Queries a secondary index (GSI or LSI).
+
+**Parameters:**
+
+- `indexName`: Name of the index.
+- `keyValues`: Partition key and optional sort key values for the index.
+- `options`: Same as `findMany`, plus optional `operators`.
 
 ```ts
-import { User } from "./schemas";
-
-import { client } from "./client";
-
-async function transactOperations() {
-  const newUser1: User = {
-    userId: "transact-user-1",
-    createdAt: new Date().toISOString(),
-    email: "transact1@example.com",
-    username: "transactUser1",
-  };
-  const newUser2: User = {
-    userId: "transact-user-2",
-    createdAt: new Date().toISOString(),
-    email: "transact2@example.com",
-    username: "transactUser2",
-  };
-
-  try {
-    // Atomically create two new users
-    await client.users.transactWrite([
-      { type: "put", item: newUser1 },
-      { type: "put", item: newUser2 },
-    ]);
-    console.log("Users created in a single transaction.");
-  } catch (error) {
-    console.error("Transaction failed, no users were created:", error);
-  }
-}
+const taggedPosts = await dynaClient.posts.findByIndex(
+  "postsByTags",
+  { tags: "typescript" },
+  { attributes: ["postId", "title"] },
+);
 ```
 
-**Batch Operations**
+---
 
-DynaORM provides convenient methods for performing batch reads and writes, which are more efficient for multiple items.
+### `model.query()`
+
+Initializes the **fluent query builder** (`QueryBuilder`) for more advanced queries.
+
+**QueryBuilder Notes:**
+
+- Supports chainable methods:
+  - `.where(partitionKey, "=", value, sortKey?)` – specify partition and sort key conditions.
+  - `.filter(attribute, operator, value, join)` – add filter conditions with optional `AND`/`OR`.
+  - `.limit(number)` – restrict number of results.
+  - `.orderBy(true|false)` – ascending/descending order on sort key.
+  - `.project(attributes)` – project specific attributes.
+  - `.onIndex(indexName)` – query a secondary index.
+  - `.consistentRead(true|false)` – use consistent reads.
+  - `.select(mode)` – specify `ALL_ATTRIBUTES`, `ALL_PROJECTED_ATTRIBUTES`, `COUNT`, or `SPECIFIC_ATTRIBUTES`.
+  - `.returnConsumedCapacity(mode)` – `INDEXES`, `TOTAL`, or `NONE`.
 
 ```ts
-import { client } from "./client";
-
-async function batchOperations() {
-  const productKeys = [{ productId: "id1" }, { productId: "id2" }];
-
-  // Batch get items
-  const products = await client.products.batchGet(productKeys);
-  console.log("Batch retrieved products:", products);
-
-  // Batch write/upsert
-  const newProducts = [
-    { productId: "id3", name: "Laptop", price: 1200, category: "electronics" },
-    { productId: "id4", name: "Mouse", price: 25, category: "electronics" },
-  ];
-  await client.products.upsertMany(newProducts);
-  console.log("New products added via batch upsert.");
-
-  // Batch delete items
-  await client.products.batchWrite([
-    { type: "delete", item: { productId: "id1" } },
-    { type: "delete", item: { productId: "id2" } },
-  ]);
-  console.log("Products deleted via batch write.");
-}
+const posts = await dynaClient.posts
+  .query()
+  .where("authorId", "=", "author-123", {
+    key: "postId",
+    operator: "begins_with",
+    value: "post-",
+  })
+  .filter("tags", "contains", "programming")
+  .limit(10)
+  .exec();
 ```
 
-**Index Operations**
+**Notes on QueryBuilder:**
 
-Interact with Global and Local Secondary Indexes using the `findByIndex`, `countByIndex`, and `deleteByIndex` methods.
+- Builds `KeyConditionExpression`, `FilterExpression`, and `ProjectionExpression` automatically.
+- Supports all common DynamoDB operators, including `begins_with`, `contains`, `IN`, `attribute_exists`, `attribute_not_exists`.
+- Automatically generates unique placeholders for attribute names and values to avoid conflicts.
+
+---
+
+### `model.scanAll(options)`
+
+Scans the entire table with optional filtering and parallel scanning.
 
 ```ts
-import { client } from "./client";
-
-async function indexOperations() {
-  // Find products by GSI
-  const electronics = await client.products.findByIndex("byCategory", {
-    category: "electronics",
-  });
-  console.log("Electronics found by index:", electronics);
-
-  // Count items in an index
-  const count = await client.products.countByIndex("byCategory", {
-    category: "electronics",
-  });
-  console.log("Number of electronics:", count);
-
-  // Check existence
-  const exists = await client.products.existsByIndex("byCategory", {
-    category: "electronics",
-  });
-  console.log("Electronics category exists:", exists);
-}
+const allPosts = await dynaClient.posts.scanAll({
+  parallelism: 4,
+  filter: { tags: { operator: "contains", value: "AI" } },
+});
 ```
 
-## 📝 API Reference
+**Options:**
 
-**`Model` Class**
+- `filter`: Filter object for results.
+- `limit`: Max number of items.
+- `parallelism`: Number of parallel scan segments.
+- `segment` / `totalSegments`: For manual parallel scan control.
+- `onSegmentData`: Callback per segment batch.
 
-| Method                             | Description                                                           |
-| ---------------------------------- | --------------------------------------------------------------------- |
-| create(item)                       | Validates and creates a new item.                                     |
-| findOne(key)                       | Retrieves a single item by its primary key.                           |
-| findMany(pkValue, [skCondition])   | Queries for all items with a given partition key.                     |
-| update(key, updates)               | Updates specific attributes of an item.                               |
-| delete(key)                        | Deletes a single item by its primary key.                             |
-| upsert(item)                       | Creates or replaces an item.                                          |
-| batchGet(keys)                     | Retrieves multiple items in a single request.                         |
-| batchWrite(items)                  | Performs a mix of put and delete operations in a single request.      |
-| upsertMany(items)                  | Batch-upserts multiple items.                                         |
-| deleteMany(pkValue, [skCondition]) | Deletes multiple items with a given partition key.                    |
-| findByIndex(indexName, keyValues)  | Queries a secondary index.                                            |
-| countByIndex(indexName, keyValues) | Counts items in a secondary index.                                    |
-| exists(key)                        | Checks if an item exists by its primary key.                          |
-| countAll()                         | Scans the table to count all items. Use with caution.                 |
-| scan([options])                    | Scans the table for items, with optional filtering. Use with caution. |
-| query()                            | Returns a QueryBuilder instance for building complex queries.         |
-| transactGet(keys)                  | Atomically retrieves a list of items.                                 |
-| transactWrite(items)               | Atomically performs put, update, or delete operations.                |
+---
 
-**`QueryBuilder` Class**
+### Batch & Transaction Operations
 
-| Method                                 | Description                                                         |
-| -------------------------------------- | ------------------------------------------------------------------- |
-| `index(name)`                          | Specifies the index to query.                                       |
-| `where(key, operator, value)`          | Adds a key condition. Can be chained.                               |
-| `filter(key, operator, value, [join])` | Adds a filter expression. Can be chained.                           |
-| `limit(count)`                         | Sets the maximum number of items to return.                         |
-| `orderBy(asc)`                         | Sets the sort order (`true` for ascending, `false` for descending). |
-| `startKey(key)`                        | Starts the query from a specific key for pagination.                |
-| `exec()`                               | Executes the query and returns the results.                         |
-| `count()`                              | Executes the query and returns the item count.                      |
+| Method                                                  | Description                                                             |
+| ------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `model.transactWrite(items)`                            | Atomically writes, updates, or deletes up to 100 items.                 |
+| `model.transactGet(keys)`                               | Atomically retrieves up to 100 items.                                   |
+| `model.batchWrite(items)`                               | Writes/deletes up to 25 items with automatic retries.                   |
+| `model.batchGet(keys)`                                  | Retrieves up to 100 items with retries.                                 |
+| `model.upsertMany(items)`                               | Convenience wrapper for batch `put` operations.                         |
+| `model.updateMany(items)`                               | Convenience wrapper for batch `update` operations.                      |
+| `model.deleteMany(partitionKeyValue, sortKeyCondition)` | Deletes all items matching a query. Warning: non-atomic for >100 items. |
