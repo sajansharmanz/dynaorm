@@ -1,176 +1,203 @@
-# DynaORM
+# DynaORM - A Type-Safe DynamoDB Client for TypeScript
 
-DynaORM is a lightweight, type-safe Object-Relational Mapper (ORM) for Amazon DynamoDB. It's built with TypeScript and Zod, providing a fluent API for defining schemas and interacting with your DynamoDB tables.
+This package provides a lightweight, type-safe client for Amazon DynamoDB, simplifying common operations with a schema-first approach. By leveraging Zod for schema validation, it ensures your data conforms to a defined structure before interacting with the database. The library abstracts away the complexities of the AWS SDK, such as marshaling and unmarshaling data, and provides a fluent API for building queries.
 
-## Features ✨
+## Key Features
 
-- **Type-Safe Schemas**: Define your data models using Zod, ensuring type safety from schema definition to database interaction.
-- **Fluent Query Builder**: Construct complex queries with a chainable, type-safe API.
-- **Comprehensive CRUD**: Supports create, findOne, findMany, update, delete, scan, and more.
-- **Batch & Transactional Operations**: Seamlessly handle batch and transactional writes and gets for multiple items.
-- **Index Support**: Define and use Global and Local Secondary Indexes effortlessly.
-- **Throttling**: Built-in support for throttling to manage your DynamoDB request limits.
-- **Advanced Query Builder**: Supports key conditions, sort key operators, filters, projections, pagination, consistent reads, and querying secondary indexes.
-
----
+* **Schema-first**: Define your table structure and indexes using a simple `defineSchema` function.
+* **Type Safety**: All operations are fully typed, leveraging TypeScript's generics to provide autocompletion and prevent runtime errors.
+* **Zod Validation**: Automatically validates data on create and upsert operations, ensuring data integrity.
+* **Fluent Query Builder**: Construct complex queries with a chainable `query()` API for intuitive read operations.
+* **Bulk Operations**: Includes methods for efficient `batchWrite`, `batchGet`, `transactWrite`, and `transactGet` operations.
+* **Throttling**: Built-in support for throttling requests to manage DynamoDB throughput.
 
 ## Installation
 
-```sh
-npm install dynaorm zod @aws-sdk/client-dynamodb @aws-sdk/util-dynamodb
+```bash
+npm install dynaorm zod @aws-sdk/client-dynamodb
 ```
 
-## Getting Started
+## How to Use DynaORM
 
-### 1. Define Your Schema
+### 1. Define your Schema
 
-Use `defineSchema` from dynaorm and `z` from Zod to create your data model.
+First, define the structure of your data using Zod. This library uses Zod to validate the data before it's sent to DynamoDB. You then use the `defineSchema` function to specify your DynamoDB table's primary keys and any secondary indexes.
 
-```ts
-import { defineSchema } from "dynaorm";
+```typescript
 import { z } from "zod";
+import { defineSchema } from "dynaorm";
 
-const userSchema = defineSchema({
-  tableName: "users",
-  partitionKey: "id",
-  fields: z.object({
-    id: z.string().uuid(),
-    username: z.string().min(3),
-    email: z.string().email(),
-    age: z.number().int().positive().optional(),
-    createdAt: z.string().datetime(),
-    updatedAt: z.string().datetime().optional(),
-  }),
+const userSchema = z.object({
+  userId: z.string().uuid(),
+  email: z.string().email(),
+  username: z.string().min(3),
+  createdAt: z.string().datetime(),
+  status: z.enum(["active", "inactive", "suspended"]),
 });
 
-const postSchema = defineSchema({
-  tableName: "posts",
-  partitionKey: "authorId",
-  sortKey: "postId",
-  fields: z.object({
-    authorId: z.string().uuid(),
-    postId: z.string().uuid(),
-    title: z.string(),
-    content: z.string(),
-    tags: z.array(z.string()).default([]),
-    createdAt: z.string().datetime(),
-  }),
+const userTableSchema = defineSchema({
+  tableName: "UsersTable",
+  fields: userSchema,
+  partitionKey: "userId",
   globalSecondaryIndexes: {
-    postsByTags: {
-      partitionKey: "tags",
-      sortKey: "createdAt",
-      projection: { type: "ALL" },
-    },
+    byEmail: { partitionKey: "email", projection: { type: "ALL" } },
+    byStatus: { partitionKey: "status", sortKey: "createdAt", projection: { type: "KEYS_ONLY" } },
   },
 });
 ```
 
 ### 2. Create the Client
 
-Instantiate your DynamoDB client and create the DynaORM client with your defined schemas.
+The `createClient` function is the entry point for your application. It takes a record of your schemas and an AWS SDK client configuration. It returns a type-safe client with a model for each schema you defined.
 
-```ts
+```typescript
 import { createClient } from "dynaorm";
+import { DynamoDBClientConfig } from "@aws-sdk/client-dynamodb";
 
-const dynaClient = createClient(
+const config: DynamoDBClientConfig = {
+  region: "us-east-1",
+};
+
+const client = createClient(
+  { users: userTableSchema },
   {
-    users: userSchema,
-    posts: postSchema,
-  },
-  {
-    config: {
-      region: "us-east-1",
-    },
+    config,
     modelOptions: {
-      throttle: { limit: 10, interval: 1000 }, // 10 requests per second
+      throttle: { limit: 100, interval: 1000 },
     },
   },
 );
 
-// Access your models
-const userModel = dynaClient.users;
-const postModel = dynaClient.posts;
+const userModel = client.users;
+```
+
+### 3. Perform Operations
+
+#### Create and Upsert
+
+```typescript
+const newUser = {
+  userId: "some-uuid-1",
+  email: "test@example.com",
+  username: "testuser",
+  createdAt: new Date().toISOString(),
+  status: "active",
+};
+
+await userModel.create(newUser);
+
+const updatedUser = { ...newUser, status: "inactive" };
+await userModel.upsert(updatedUser);
+```
+
+#### Read Operations
+
+```typescript
+const user = await userModel.findOne({ userId: "some-uuid-1" });
+console.log(user);
+
+const activeUsers = await userModel.findByIndex("byStatus", { status: "active" }, { limit: 10 });
+console.log(activeUsers);
+
+const recentActiveUsers = await userModel
+  .query()
+  .onIndex("byStatus")
+  .wherePK("active")
+  .whereSK("begins_with", "2023-10")
+  .execAll();
+console.log(recentActiveUsers);
+```
+
+#### Update and Delete
+
+```typescript
+await userModel.update({ userId: "some-uuid-1" }, { status: "suspended" });
+await userModel.delete({ userId: "some-uuid-1" });
+```
+
+#### Bulk Operations
+
+```typescript
+await userModel.batchWrite([
+  { type: "put", item: { userId: "uuid-2", email: "a@b.com", username: "userA", createdAt: new Date().toISOString(), status: "active" } },
+  { type: "delete", item: { userId: "uuid-3" } },
+]);
+
+const items = await userModel.batchGet([{ userId: "uuid-2" }]);
+console.log(items);
+
+await userModel.transactWrite([
+  { type: "put", item: { userId: "uuid-4", email: "c@d.com", username: "userC", createdAt: new Date().toISOString(), status: "active" } },
+  { type: "update", key: { userId: "uuid-2" }, updates: { username: "userA-updated" } },
+]);
 ```
 
 ## API Reference
 
-### `createClient(schemas, options)`
+### createClient(schemas, options)
 
-Creates the main client instance with access to all your defined models.
+Initializes the DynamoDB client and attaches models for each schema.
 
-**Parameters:**
+* **schemas**: A record mapping model names to schemas.
+* **options**: Contains `config` (DynamoDBClientConfig), optional `modelOptions`, and optional `perModelOptions`.
 
-- `schemas`: A record of schema names to their `defineSchema` results.
-- `options`:
-  - `config`: AWS SDK `DynamoDBClientConfig`.
-  - `modelOptions` (Optional): Default options applied to all models.
-    - `throttle`: `{ limit: number; interval: number }` object for throttling requests.
+### defineSchema(schema)
 
-### Model API
+Defines a new DynamoDB table schema with strong typing.
 
-#### `model.create(item)`
+* **tableName**: DynamoDB table name.
+* **fields**: Zod object for item structure.
+* **partitionKey**: Partition key field name.
+* **sortKey**?: Optional sort key.
+* **globalSecondaryIndexes**?: Optional GSIs.
+* **localSecondaryIndexes**?: Optional LSIs.
 
-Creates a new item in the table. Validates the item against the schema.
+### Model<S>
 
-#### `model.findOne(key, options)`
+Provides methods for interacting with a DynamoDB table.
 
-Retrieves a single item by primary key. Returns `null` if not found.
+#### CRUD Operations
 
-#### `model.findMany(partitionKeyValue, sortKeyCondition?, options?)`
+* `create(item)`
+* `upsert(item, options?)`
+* `update(key, updates, options?)`
+* `delete(key, options?)`
+* `findOne(key, options?)`
 
-Retrieves multiple items matching the partition key and optional sort key condition.
+#### Query and Scan
 
-#### `model.query()`
+* `query()`
+* `findMany(partitionKeyValue, sortKeyCondition?, options?)`
+* `findByIndex(indexName, keyValues, options?)`
+* `scanAll(options?)`
+* `getItemCount(options?)`
 
-Fluent, schema-aware query builder with full support for:
+#### Bulk & Transactional Operations
 
-- Partition key and sort key conditions
-- Filter conditions with operators: `=`, `<>`, `<`, `>`, `<=`, `>=`, `contains`, `begins_with`, `attribute_exists`, `attribute_not_exists`, `IN`
-- Projection of specific attributes
-- Pagination and `execAll()` for retrieving all pages
-- Ordering (ascending/descending) and start key pagination
-- Querying on secondary indexes
-- Consistent reads
+* `batchWrite(items)`
+* `batchGet(keys)`
+* `transactWrite(items)`
+* `transactGet(keys)`
+* `upsertMany(items)`
+* `updateMany(items)`
+* `deleteMany(partitionKeyValue, sortKeyCondition?)`
 
-**Example:**
+### QueryBuilder<S>
 
-```ts
-const posts = await dynaClient.posts
-  .query()
-  .wherePK("author-123")
-  .whereSK("begins_with", "post-")
-  .filter("tags", "contains", "typescript")
-  .limit(10)
-  .orderBy(true)
-  .execAll();
-```
+Fluent API for building DynamoDB Query operations.
 
-### `model.scanAll(options)`
+* `wherePK(value)`
+* `whereSK(operator, value)`
+* `filter(key, operator, value, join?)`
+* `limit(count)`
+* `orderBy(asc)`
+* `startKey(key)`
+* `project(attrs)`
+* `onIndex(index)`
+* `consistentRead()`
 
-Scans the entire table with optional filtering, projections, and parallel scanning.
+#### Execution Methods
 
-### Batch & Transaction Operations
-
-- `transactWrite(items)` – Atomic writes/updates/deletes (up to 100 items per transaction)
-- `transactGet(keys)` – Atomic retrieval of up to 100 items
-- `batchWrite(items)` – Batch write/delete with retries (up to 25 items per batch)
-- `batchGet(keys)` – Batch retrieval with retries (up to 100 items per batch)
-- `upsertMany(items)` – Convenience wrapper for batch put
-- `updateMany(items)` – Convenience wrapper for batch updates
-- `deleteMany(partitionKeyValue, sortKeyCondition?)` – Deletes multiple items; non-atomic for >100 items
-- `findByIndex(indexName, keyValues, options?)` – Query items using secondary index
-- `deleteByIndex(indexName, keyValues)` – Delete items via secondary index
-- `updateByIndex(indexName, keyValues, updates)` – Update items via secondary index
-
-### Throttling
-
-All operations can respect request limits using the `throttle` option in `modelOptions` when creating the client.
-
----
-
-## Notes
-
-- Type safety is enforced throughout, from schema definition to query building.
-- Queries automatically generate placeholders for attribute names and values.
-- Supports DynamoDB features like conditional expressions, atomic counters, list append, and set addition.
-- Pagination and streaming queries are supported via `paginate()` and `execAll()` in the query builder.
+* `exec()`
+* `paginate()`
+* `execAll()`
