@@ -4,12 +4,12 @@ This package provides a lightweight, type-safe client for Amazon DynamoDB, simpl
 
 ## Key Features
 
-* **Schema-first**: Define your table structure and indexes using a simple `defineSchema` function.
-* **Type Safety**: All operations are fully typed, leveraging TypeScript's generics to provide autocompletion and prevent runtime errors.
-* **Zod Validation**: Automatically validates data on create and upsert operations, ensuring data integrity.
-* **Fluent Query Builder**: Construct complex queries with a chainable `query()` API for intuitive read operations.
-* **Bulk Operations**: Includes methods for efficient `batchWrite`, `batchGet`, `transactWrite`, and `transactGet` operations.
-* **Throttling**: Built-in support for throttling requests to manage DynamoDB throughput.
+- **Schema-first**: Define your table structure and indexes using a simple `defineSchema` function.
+- **Type Safety**: All operations are fully typed, leveraging TypeScript's generics to provide autocompletion and prevent runtime errors.
+- **Zod Validation**: Automatically validates data on create and upsert operations, ensuring data integrity.
+- **Fluent Query Builder**: Construct complex queries with a chainable `query()` API for intuitive read operations.
+- **Bulk Operations**: Includes methods for efficient `batchWrite`, `batchGet`, `transactWrite`, and `transactGet` operations.
+- **Throttling**: Built-in support for throttling requests to manage DynamoDB throughput.
 
 ## Installation
 
@@ -24,8 +24,8 @@ npm install dynaorm zod @aws-sdk/client-dynamodb
 First, define the structure of your data using Zod. This library uses Zod to validate the data before it's sent to DynamoDB. You then use the `defineSchema` function to specify your DynamoDB table's primary keys and any secondary indexes.
 
 ```typescript
-import { z } from "zod";
 import { defineSchema } from "dynaorm";
+import { z } from "zod";
 
 const userSchema = z.object({
   userId: z.string().uuid(),
@@ -41,7 +41,11 @@ const userTableSchema = defineSchema({
   partitionKey: "userId",
   globalSecondaryIndexes: {
     byEmail: { partitionKey: "email", projection: { type: "ALL" } },
-    byStatus: { partitionKey: "status", sortKey: "createdAt", projection: { type: "KEYS_ONLY" } },
+    byStatus: {
+      partitionKey: "status",
+      sortKey: "createdAt",
+      projection: { type: "KEYS_ONLY" },
+    },
   },
 });
 ```
@@ -51,8 +55,8 @@ const userTableSchema = defineSchema({
 The `createClient` function is the entry point for your application. It takes a record of your schemas and an AWS SDK client configuration. It returns a type-safe client with a model for each schema you defined.
 
 ```typescript
-import { createClient } from "dynaorm";
 import { DynamoDBClientConfig } from "@aws-sdk/client-dynamodb";
+import { createClient } from "dynaorm";
 
 const config: DynamoDBClientConfig = {
   region: "us-east-1",
@@ -96,7 +100,11 @@ await userModel.upsert(updatedUser);
 const user = await userModel.findOne({ userId: "some-uuid-1" });
 console.log(user);
 
-const activeUsers = await userModel.findByIndex("byStatus", { status: "active" }, { limit: 10 });
+const activeUsers = await userModel.findByIndex(
+  "byStatus",
+  { status: "active" },
+  { limit: 10 },
+);
 console.log(activeUsers);
 
 const recentActiveUsers = await userModel
@@ -119,7 +127,16 @@ await userModel.delete({ userId: "some-uuid-1" });
 
 ```typescript
 await userModel.batchWrite([
-  { type: "put", item: { userId: "uuid-2", email: "a@b.com", username: "userA", createdAt: new Date().toISOString(), status: "active" } },
+  {
+    type: "put",
+    item: {
+      userId: "uuid-2",
+      email: "a@b.com",
+      username: "userA",
+      createdAt: new Date().toISOString(),
+      status: "active",
+    },
+  },
   { type: "delete", item: { userId: "uuid-3" } },
 ]);
 
@@ -127,8 +144,21 @@ const items = await userModel.batchGet([{ userId: "uuid-2" }]);
 console.log(items);
 
 await userModel.transactWrite([
-  { type: "put", item: { userId: "uuid-4", email: "c@d.com", username: "userC", createdAt: new Date().toISOString(), status: "active" } },
-  { type: "update", key: { userId: "uuid-2" }, updates: { username: "userA-updated" } },
+  {
+    type: "put",
+    item: {
+      userId: "uuid-4",
+      email: "c@d.com",
+      username: "userC",
+      createdAt: new Date().toISOString(),
+      status: "active",
+    },
+  },
+  {
+    type: "update",
+    key: { userId: "uuid-2" },
+    updates: { username: "userA-updated" },
+  },
 ]);
 ```
 
@@ -138,19 +168,19 @@ await userModel.transactWrite([
 
 Initializes the DynamoDB client and attaches models for each schema.
 
-* **schemas**: A record mapping model names to schemas.
-* **options**: Contains `config` (DynamoDBClientConfig), optional `modelOptions`, and optional `perModelOptions`.
+- **schemas**: A record mapping model names to schemas.
+- **options**: Contains `config` (DynamoDBClientConfig), optional `modelOptions`, and optional `perModelOptions`.
 
 ### defineSchema(schema)
 
 Defines a new DynamoDB table schema with strong typing.
 
-* **tableName**: DynamoDB table name.
-* **fields**: Zod object for item structure.
-* **partitionKey**: Partition key field name.
-* **sortKey**?: Optional sort key.
-* **globalSecondaryIndexes**?: Optional GSIs.
-* **localSecondaryIndexes**?: Optional LSIs.
+- **tableName**: DynamoDB table name.
+- **fields**: Zod object for item structure.
+- **partitionKey**: Partition key field name.
+- **sortKey**?: Optional sort key.
+- **globalSecondaryIndexes**?: Optional GSIs.
+- **localSecondaryIndexes**?: Optional LSIs.
 
 ### Model<S>
 
@@ -158,46 +188,46 @@ Provides methods for interacting with a DynamoDB table.
 
 #### CRUD Operations
 
-* `create(item)`
-* `upsert(item, options?)`
-* `update(key, updates, options?)`
-* `delete(key, options?)`
-* `findOne(key, options?)`
+- `create(item)`
+- `upsert(item, options?)`
+- `update(key, updates, options?)`
+- `delete(key, options?)`
+- `findOne(key, options?)`
 
 #### Query and Scan
 
-* `query()`
-* `findMany(partitionKeyValue, sortKeyCondition?, options?)`
-* `findByIndex(indexName, keyValues, options?)`
-* `scanAll(options?)`
-* `getItemCount(options?)`
+- `query()`
+- `findMany(partitionKeyValue, sortKeyCondition?, options?)`
+- `findByIndex(indexName, keyValues, options?)`
+- `scanAll(options?)`
+- `getItemCount(options?)`
 
 #### Bulk & Transactional Operations
 
-* `batchWrite(items)`
-* `batchGet(keys)`
-* `transactWrite(items)`
-* `transactGet(keys)`
-* `upsertMany(items)`
-* `updateMany(items)`
-* `deleteMany(partitionKeyValue, sortKeyCondition?)`
+- `batchWrite(items)`
+- `batchGet(keys)`
+- `transactWrite(items)`
+- `transactGet(keys)`
+- `upsertMany(items)`
+- `updateMany(items)`
+- `deleteMany(partitionKeyValue, sortKeyCondition?)`
 
 ### QueryBuilder<S>
 
 Fluent API for building DynamoDB Query operations.
 
-* `wherePK(value)`
-* `whereSK(operator, value)`
-* `filter(key, operator, value, join?)`
-* `limit(count)`
-* `orderBy(asc)`
-* `startKey(key)`
-* `project(attrs)`
-* `onIndex(index)`
-* `consistentRead()`
+- `wherePK(value)`
+- `whereSK(operator, value)`
+- `filter(key, operator, value, join?)`
+- `limit(count)`
+- `orderBy(asc)`
+- `startKey(key)`
+- `project(attrs)`
+- `onIndex(index)`
+- `consistentRead()`
 
 #### Execution Methods
 
-* `exec()`
-* `paginate()`
-* `execAll()`
+- `exec()`
+- `paginate()`
+- `execAll()`
