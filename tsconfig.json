@@ -42,14 +42,12 @@
     "rootDir": "src",
     "outDir": "dist",
     "sourceMap": true,
-    "incremental": true,
 
     /* --------------------------------------------------
      * Library / Package Builds
      * -------------------------------------------------- */
     "declaration": true,
     "declarationMap": true,
-    "composite": true,
 
     "types": ["vitest/globals"]
   },
