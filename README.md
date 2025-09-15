@@ -5,16 +5,12 @@ DynaORM is a lightweight, type-safe Object-Relational Mapper (ORM) for Amazon Dy
 ## Features ✨
 
 - **Type-Safe Schemas**: Define your data models using Zod, ensuring type safety from schema definition to database interaction.
-
-- **Fluent Query Builder**: Construct complex queries with a chainable API.
-
+- **Fluent Query Builder**: Construct complex queries with a chainable, type-safe API.
 - **Comprehensive CRUD**: Supports create, findOne, findMany, update, delete, scan, and more.
-
 - **Batch & Transactional Operations**: Seamlessly handle batch and transactional writes and gets for multiple items.
-
 - **Index Support**: Define and use Global and Local Secondary Indexes effortlessly.
-
 - **Throttling**: Built-in support for throttling to manage your DynamoDB request limits.
+- **Advanced Query Builder**: Supports key conditions, sort key operators, filters, projections, pagination, consistent reads, and querying secondary indexes.
 
 ---
 
@@ -24,13 +20,11 @@ DynaORM is a lightweight, type-safe Object-Relational Mapper (ORM) for Amazon Dy
 npm install dynaorm zod @aws-sdk/client-dynamodb @aws-sdk/util-dynamodb
 ```
 
----
-
 ## Getting Started
 
-**1. Define Your Schema**
+### 1. Define Your Schema
 
-Use `defineSchema` from `dynaorm` and `z` from `zod` to create your data model.
+Use `defineSchema` from dynaorm and `z` from Zod to create your data model.
 
 ```ts
 import { defineSchema } from "dynaorm";
@@ -64,15 +58,16 @@ const postSchema = defineSchema({
   globalSecondaryIndexes: {
     postsByTags: {
       partitionKey: "tags",
+      sortKey: "createdAt",
       projection: { type: "ALL" },
     },
   },
 });
 ```
 
-**2. Create the Client**
+### 2. Create the Client
 
-Instantiate your DynamoDB client and create the `dynaorm` client with your defined schemas.
+Instantiate your DynamoDB client and create the DynaORM client with your defined schemas.
 
 ```ts
 import { createClient } from "dynaorm";
@@ -97,11 +92,9 @@ const userModel = dynaClient.users;
 const postModel = dynaClient.posts;
 ```
 
----
+## API Reference
 
-# API Reference
-
-## `createClient(schemas, options)`
+### `createClient(schemas, options)`
 
 Creates the main client instance with access to all your defined models.
 
@@ -111,274 +104,73 @@ Creates the main client instance with access to all your defined models.
 - `options`:
   - `config`: AWS SDK `DynamoDBClientConfig`.
   - `modelOptions` (Optional): Default options applied to all models.
-  - `throttle`: `{ limit: number; interval: number }` object for throttling requests.
-  - `perModelOptions` (Optional): Per-model overrides for `modelOptions`.
+    - `throttle`: `{ limit: number; interval: number }` object for throttling requests.
 
----
+### Model API
 
-## Model API
-
-The `Model` class provides the core methods for interacting with a DynamoDB table.
-
-### `model.create(item)`
+#### `model.create(item)`
 
 Creates a new item in the table. Validates the item against the schema.
 
-```ts
-const newUser = await dynaClient.users.create({
-  id: "some-uuid",
-  username: "johndoe",
-  email: "john@example.com",
-  createdAt: new Date().toISOString(),
-});
-```
-
----
-
-### `model.findOne(key, options)`
+#### `model.findOne(key, options)`
 
 Retrieves a single item by primary key. Returns `null` if not found.
 
-**Options:**
+#### `model.findMany(partitionKeyValue, sortKeyCondition?, options?)`
 
-- `attributes`: Optional array of attributes to project.
-- `consistentRead`: Optional boolean for consistent reads.
+Retrieves multiple items matching the partition key and optional sort key condition.
 
-```ts
-const user = await dynaClient.users.findOne({ id: "some-uuid" });
-```
+#### `model.query()`
 
----
+Fluent, schema-aware query builder with full support for:
 
-### `model.findMany(partitionKeyValue, sortKeyCondition, options)`
+- Partition key and sort key conditions
+- Filter conditions with operators: `=`, `<>`, `<`, `>`, `<=`, `>=`, `contains`, `begins_with`, `attribute_exists`, `attribute_not_exists`, `IN`
+- Projection of specific attributes
+- Pagination and `execAll()` for retrieving all pages
+- Ordering (ascending/descending) and start key pagination
+- Querying on secondary indexes
+- Consistent reads
 
-Queries multiple items sharing the same partition key.
-
-**Parameters:**
-
-- `partitionKeyValue`: Partition key value.
-- `sortKeyCondition` (Optional): `{ operator, value }` for the sort key.
-- `options`:
-  - `limit`: Maximum number of items to return.
-  - `consistentRead`: Boolean for consistent reads.
-  - `attributes`: Attributes to project.
-
-```ts
-const posts = await dynaClient.posts.findMany("author-123", {
-  operator: "begins_with",
-  value: "post-",
-});
-```
-
----
-
-### `model.findByIndex(indexName, keyValues, options)`
-
-Queries a secondary index (GSI or LSI).
-
-**Parameters:**
-
-- `indexName`: Name of the index.
-- `keyValues`: Partition key and optional sort key values for the index.
-- `options`: Same as `findMany`, plus optional `operators`.
-
-```ts
-const taggedPosts = await dynaClient.posts.findByIndex(
-  "postsByTags",
-  { tags: "typescript" },
-  { attributes: ["postId", "title"] },
-);
-```
-
----
-
-### `model.query()` – Fluent, Schema-Aware Query Builder
-
-The `QueryBuilder` provides a type-safe, chainable API for building complex queries on your DynamoDB tables. All keys and filter values are validated against the schema, ensuring correct types at compile time.
-
-#### Basic Usage
+**Example:**
 
 ```ts
 const posts = await dynaClient.posts
   .query()
-  .where("authorId", "author-123") // partition key
-  .limit(10) // limit number of results
-  .exec();
-```
-
----
-
-#### Sort Key Conditions
-
-You can optionally filter by the sort key with any valid operator except `"="` (reserved for partition keys):
-
-```ts
-const posts = await dynaClient.posts
-  .query()
-  .where("authorId", "author-123", {
-    key: "postId",
-    operator: "begins_with",
-    value: "post-",
-  })
-  .exec();
-```
-
-Supported sort key operators: `<`, `<=`, `>`, `>=`, `<>`, `BETWEEN`, `begins_with`.
-
----
-
-#### Filter Conditions
-
-Add filters with `AND` / `OR` joins. Values are automatically type-checked against your schema.
-
-```ts
-const posts = await dynaClient.posts
-  .query()
-  .where("authorId", "author-123")
-  .filter("tags", "contains", "programming") // single value
-  .filter("count", ">", 10) // numeric comparison
-  .filter("tags", "IN", ["typescript", "webdev"]) // array of valid type
-  .exec();
-```
-
-Supported operators:
-`=`, `<>`, `<`, `>`, `<=`, `>=`, `contains`, `begins_with`, `IN`, `attribute_exists`, `attribute_not_exists`.
-
----
-
-#### Secondary Index Queries
-
-Type-safe index queries using schema-defined GSI/LSI names:
-
-```ts
-const posts = await dynaClient.posts
-  .query()
-  .where("tags", "typescript")
-  .onIndex("postsByTags") // type-safe index name
-  .limit(5)
-  .exec();
-```
-
----
-
-#### Projection of Attributes
-
-Project only the attributes you need. Type-checked against your schema:
-
-```ts
-const posts = await dynaClient.posts
-  .query()
-  .where("authorId", "author-123")
-  .project(["postId", "title"]) // only selected attributes returned
-  .exec();
-```
-
----
-
-#### Ordering & Pagination
-
-```ts
-const posts = await dynaClient.posts
-  .query()
-  .where("authorId", "author-123")
-  .orderBy(true) // ascending (default: true)
-  .startKey({ authorId: "author-123", postId: "post-42" }) // pagination
-  .exec();
-```
-
----
-
-#### Consistent Reads & Select Mode
-
-```ts
-const posts = await dynaClient.posts
-  .query()
-  .where("authorId", "author-123")
-  .consistentRead(true) // strongly consistent read
-  .select("ALL_ATTRIBUTES") // choose what to return
-  .exec();
-```
-
-`select` modes:
-
-- `ALL_ATTRIBUTES` – full items
-- `ALL_PROJECTED_ATTRIBUTES` – index projection only
-- `SPECIFIC_ATTRIBUTES` – only attributes selected via `.project()`
-- `COUNT` – returns only the count of matching items
-
----
-
-#### Return Consumed Capacity
-
-```ts
-const posts = await dynaClient.posts
-  .query()
-  .where("authorId", "author-123")
-  .returnConsumedCapacity("TOTAL")
-  .exec();
-```
-
-Options: `"INDEXES" | "TOTAL" | "NONE"`
-
----
-
-#### Full Example
-
-```ts
-const posts = await dynaClient.posts
-  .query()
-  .where("authorId", "author-123", {
-    key: "postId",
-    operator: "begins_with",
-    value: "post-",
-  })
-  .filter("tags", "IN", ["typescript", "programming"])
-  .onIndex("postsByTags")
-  .project(["postId", "title", "tags"])
-  .orderBy(false)
+  .wherePK("author-123")
+  .whereSK("begins_with", "post-")
+  .filter("tags", "contains", "typescript")
   .limit(10)
-  .consistentRead(true)
-  .returnConsumedCapacity("TOTAL")
-  .exec();
+  .orderBy(true)
+  .execAll();
 ```
-
-**Notes:**
-
-- All keys and filter values are **validated against the schema** at compile time.
-- Placeholders for DynamoDB attribute names and values are **auto-generated** to prevent conflicts.
-- Fully supports **partition key, sort key, filters, secondary indexes, projections, pagination, and DynamoDB operators**.
-
----
 
 ### `model.scanAll(options)`
 
-Scans the entire table with optional filtering and parallel scanning.
-
-```ts
-const allPosts = await dynaClient.posts.scanAll({
-  parallelism: 4,
-  filter: { tags: { operator: "contains", value: "AI" } },
-});
-```
-
-**Options:**
-
-- `filter`: Filter object for results.
-- `limit`: Max number of items.
-- `parallelism`: Number of parallel scan segments.
-- `segment` / `totalSegments`: For manual parallel scan control.
-- `onSegmentData`: Callback per segment batch.
-
----
+Scans the entire table with optional filtering, projections, and parallel scanning.
 
 ### Batch & Transaction Operations
 
-| Method                                                  | Description                                                             |
-| ------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `model.transactWrite(items)`                            | Atomically writes, updates, or deletes up to 100 items.                 |
-| `model.transactGet(keys)`                               | Atomically retrieves up to 100 items.                                   |
-| `model.batchWrite(items)`                               | Writes/deletes up to 25 items with automatic retries.                   |
-| `model.batchGet(keys)`                                  | Retrieves up to 100 items with retries.                                 |
-| `model.upsertMany(items)`                               | Convenience wrapper for batch `put` operations.                         |
-| `model.updateMany(items)`                               | Convenience wrapper for batch `update` operations.                      |
-| `model.deleteMany(partitionKeyValue, sortKeyCondition)` | Deletes all items matching a query. Warning: non-atomic for >100 items. |
+- `transactWrite(items)` – Atomic writes/updates/deletes (up to 100 items per transaction)
+- `transactGet(keys)` – Atomic retrieval of up to 100 items
+- `batchWrite(items)` – Batch write/delete with retries (up to 25 items per batch)
+- `batchGet(keys)` – Batch retrieval with retries (up to 100 items per batch)
+- `upsertMany(items)` – Convenience wrapper for batch put
+- `updateMany(items)` – Convenience wrapper for batch updates
+- `deleteMany(partitionKeyValue, sortKeyCondition?)` – Deletes multiple items; non-atomic for >100 items
+- `findByIndex(indexName, keyValues, options?)` – Query items using secondary index
+- `deleteByIndex(indexName, keyValues)` – Delete items via secondary index
+- `updateByIndex(indexName, keyValues, updates)` – Update items via secondary index
+
+### Throttling
+
+All operations can respect request limits using the `throttle` option in `modelOptions` when creating the client.
+
+---
+
+## Notes
+
+- Type safety is enforced throughout, from schema definition to query building.
+- Queries automatically generate placeholders for attribute names and values.
+- Supports DynamoDB features like conditional expressions, atomic counters, list append, and set addition.
+- Pagination and streaming queries are supported via `paginate()` and `execAll()` in the query builder.

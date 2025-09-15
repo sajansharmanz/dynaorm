@@ -1,6 +1,7 @@
 import {
   BatchGetItemCommand,
   BatchWriteItemCommand,
+  DeleteItemCommand,
   DynamoDBClient,
   GetItemCommand,
   PutItemCommand,
@@ -8,11 +9,14 @@ import {
   ScanCommand,
   TransactGetItemsCommand,
   TransactWriteItemsCommand,
+  UpdateItemCommand,
   type BatchGetItemCommandOutput,
+  type DeleteItemCommandOutput,
   type GetItemCommandOutput,
   type PutItemCommandOutput,
   type ScanCommandOutput,
   type TransactGetItemsCommandOutput,
+  type UpdateItemCommandOutput,
 } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import pThrottle from "p-throttle";
@@ -79,9 +83,6 @@ type FilterOperators =
   | "attribute_exists"
   | "attribute_not_exists";
 
-// --------------------
-// Helpers
-// --------------------
 function chunk<T>(arr: T[], size: number): T[][] {
   const result: T[][] = [];
   for (let i = 0; i < arr.length; i += size)
@@ -93,9 +94,6 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// --------------------
-// Model Class
-// --------------------
 export class Model<S extends Schema<any, any, any, any, any>> {
   public schema: S;
   public tableName: S["tableName"];
@@ -113,9 +111,6 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     if (options?.throttle) this.throttle = pThrottle(options.throttle);
   }
 
-  // --------------------
-  // Internal Helpers
-  // --------------------
   private async execute<T>(fn: () => Promise<T>): Promise<T> {
     return this.throttle ? this.throttle(fn)() : fn();
   }
@@ -131,7 +126,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       throw new Error(`Sort key ${String(this.sortKey)} is required`);
   }
 
-  private getIndex(indexName: string) {
+  public getIndex(indexName: string) {
     if (indexName in this.schema.globalSecondaryIndexes)
       return this.schema.globalSecondaryIndexes[indexName];
     if (indexName in this.schema.localSecondaryIndexes)
@@ -219,10 +214,12 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     >,
   ) {
     if (!filter) return {};
+
     const FilterExpression: string[] = [];
     const ExpressionAttributeNames: Record<string, string> = {};
     const ExpressionAttributeValues: Record<string, any> = {};
     const getName = this.getNameHelper();
+    let valueCounter = 0;
 
     for (const k in filter) {
       const val = filter[k];
@@ -231,6 +228,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
         typeof val === "object" &&
         "__operation" in val! &&
         "value" in val;
+
       const operator = isOperatorObject ? (val as any).__operation : "=";
       const value = isOperatorObject ? (val as any).value : val;
       const namePlaceholder = getName(k);
@@ -240,20 +238,24 @@ export class Model<S extends Schema<any, any, any, any, any>> {
         Array.isArray(value) &&
         value.length === 2
       ) {
-        ExpressionAttributeValues[":v0"] = value[0];
-        ExpressionAttributeValues[":v1"] = value[1];
-        FilterExpression.push(`${namePlaceholder} BETWEEN :v0 AND :v1`);
+        const vp1 = `:v${valueCounter++}`;
+        const vp2 = `:v${valueCounter++}`;
+        ExpressionAttributeValues[vp1] = value[0];
+        ExpressionAttributeValues[vp2] = value[1];
+        FilterExpression.push(`${namePlaceholder} BETWEEN ${vp1} AND ${vp2}`);
       } else if (operator === "begins_with" || operator === "contains") {
-        ExpressionAttributeValues[":v0"] = value;
-        FilterExpression.push(`${operator}(${namePlaceholder}, :v0)`);
+        const vp = `:v${valueCounter++}`;
+        ExpressionAttributeValues[vp] = value;
+        FilterExpression.push(`${operator}(${namePlaceholder}, ${vp})`);
       } else if (
         operator === "attribute_exists" ||
         operator === "attribute_not_exists"
       ) {
         FilterExpression.push(`${operator}(${namePlaceholder})`);
       } else {
-        ExpressionAttributeValues[":v0"] = value;
-        FilterExpression.push(`${namePlaceholder} ${operator} :v0`);
+        const vp = `:v${valueCounter++}`;
+        ExpressionAttributeValues[vp] = value;
+        FilterExpression.push(`${namePlaceholder} ${operator} ${vp}`);
       }
 
       ExpressionAttributeNames[namePlaceholder] = k;
@@ -272,6 +274,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     const ExpressionAttributeNames: Record<string, string> = {};
     const ExpressionAttributeValues: Record<string, any> = {};
     const getName = this.getNameHelper();
+    let valueCounter = 0;
 
     for (const k in updates) {
       const val = updates[k];
@@ -281,34 +284,39 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       ExpressionAttributeNames[namePlaceholder] = k;
 
       if (typeof val === "object" && "__operation" in val) {
-        ExpressionAttributeValues[":v0"] = val.value;
+        const vp = `:v${valueCounter++}`;
+        ExpressionAttributeValues[vp] = val.value;
+
         if (val.__operation === "increment") {
-          setExpressions.push(`${namePlaceholder} = ${namePlaceholder} + :v0`);
+          setExpressions.push(
+            `${namePlaceholder} = ${namePlaceholder} + ${vp}`,
+          );
         } else if (val.__operation === "append") {
           setExpressions.push(
-            `${namePlaceholder} = list_append(${namePlaceholder}, :v0)`,
+            `${namePlaceholder} = list_append(${namePlaceholder}, ${vp})`,
           );
         } else if (val.__operation === "addSet") {
-          addExpressions.push(`${namePlaceholder} :v0`);
+          addExpressions.push(`${namePlaceholder} ${vp}`);
         }
       } else {
-        ExpressionAttributeValues[":v0"] = val;
-        setExpressions.push(`${namePlaceholder} = :v0`);
+        const vp = `:v${valueCounter++}`;
+        ExpressionAttributeValues[vp] = val;
+        setExpressions.push(`${namePlaceholder} = ${vp}`);
       }
     }
 
-    const UpdateExpression: string[] = [];
-    if (setExpressions.length)
-      UpdateExpression.push("SET " + setExpressions.join(", "));
-    if (addExpressions.length)
-      UpdateExpression.push("ADD " + addExpressions.join(" "));
-    if (!UpdateExpression.length)
+    if (!setExpressions.length && !addExpressions.length)
       return {
         UpdateExpression: null,
         ExpressionAttributeNames: null,
         ExpressionAttributeValues: null,
       };
 
+    const UpdateExpression: string[] = [];
+    if (setExpressions.length)
+      UpdateExpression.push("SET " + setExpressions.join(", "));
+    if (addExpressions.length)
+      UpdateExpression.push("ADD " + addExpressions.join(" "));
     return {
       UpdateExpression: UpdateExpression.join(" "),
       ExpressionAttributeNames,
@@ -332,9 +340,6 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return { items: allResults.flatMap((r) => r.items), lastKey: null };
   }
 
-  // --------------------
-  // Pagination Helper
-  // --------------------
   private async *paginateQuery(
     commandFactory: (exclusiveStartKey?: Record<string, any>) => any,
   ): AsyncGenerator<any, void, unknown> {
@@ -349,13 +354,65 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     } while (ExclusiveStartKey);
   }
 
-  // --------------------
-  // CRUD
-  // --------------------
   async create(item: InferSchema<S>) {
     this.schema.fields.parse(item);
     await this.sendCommand<PutItemCommandOutput>(
       new PutItemCommand({ TableName: this.tableName, Item: marshall(item) }),
+    );
+  }
+
+  async upsert(
+    item: InferSchema<S>,
+    options?: { condition?: string },
+  ): Promise<void> {
+    this.schema.fields.parse(item);
+    await this.sendCommand<PutItemCommandOutput>(
+      new PutItemCommand({
+        TableName: this.tableName,
+        Item: marshall(item),
+        ConditionExpression: options?.condition,
+      }),
+    );
+  }
+
+  async update(
+    key: Key<S>,
+    updates: Partial<{
+      [K in keyof InferSchema<S>]: AtomicValue<InferSchema<S>[K]>;
+    }>,
+    options?: { condition?: string },
+  ): Promise<void> {
+    this.validateKey(key);
+    const {
+      UpdateExpression,
+      ExpressionAttributeNames,
+      ExpressionAttributeValues,
+    } = this.buildUpdateExpression(updates);
+
+    if (!UpdateExpression) {
+      throw new Error("Update must include at least one attribute");
+    }
+
+    await this.sendCommand<UpdateItemCommandOutput>(
+      new UpdateItemCommand({
+        TableName: this.tableName,
+        Key: marshall(key),
+        UpdateExpression,
+        ExpressionAttributeNames,
+        ExpressionAttributeValues,
+        ConditionExpression: options?.condition,
+      }),
+    );
+  }
+
+  async delete(key: Key<S>, options?: { condition?: string }): Promise<void> {
+    this.validateKey(key);
+    await this.sendCommand<DeleteItemCommandOutput>(
+      new DeleteItemCommand({
+        TableName: this.tableName,
+        Key: marshall(key),
+        ConditionExpression: options?.condition,
+      }),
     );
   }
 
@@ -573,9 +630,35 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return { items: results, lastKey: ExclusiveStartKey ?? null };
   }
 
-  // --------------------
-  // Transaction Methods
-  // --------------------
+  async getItemCount(options?: {
+    filter?: Partial<
+      Record<
+        keyof InferSchema<S>,
+        { __operation: FilterOperators; value: any } | any
+      >
+    >;
+    consistentRead?: boolean;
+  }): Promise<number> {
+    const {
+      FilterExpression,
+      ExpressionAttributeNames,
+      ExpressionAttributeValues,
+    } = this.buildFilterExpression(options?.filter);
+
+    const result = await this.sendCommand<ScanCommandOutput>(
+      new ScanCommand({
+        TableName: this.tableName,
+        Select: "COUNT",
+        FilterExpression,
+        ExpressionAttributeNames,
+        ExpressionAttributeValues,
+        ConsistentRead: options?.consistentRead,
+      }),
+    );
+
+    return result.Count ?? 0;
+  }
+
   async transactWrite(
     items: Array<
       | { type: "put"; item: InferSchema<S>; condition?: string }
@@ -659,9 +742,6 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return results;
   }
 
-  // --------------------
-  // Batch Operations
-  // --------------------
   async batchWrite(
     items: Array<{ type: "put" | "delete"; item: InferSchema<S> | Key<S> }>,
   ) {

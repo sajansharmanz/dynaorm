@@ -50,10 +50,21 @@ interface FilterCondition<
   join?: "AND" | "OR";
 }
 
+type SortKeyCondition<S extends Schema<any, any, any, any, any>> = {
+  key: NonNullable<S["sortKey"]>;
+  operator: KeyOperators;
+  value:
+    | InferSchema<S>[NonNullable<S["sortKey"]>]
+    | [
+        InferSchema<S>[NonNullable<S["sortKey"]>],
+        InferSchema<S>[NonNullable<S["sortKey"]>],
+      ];
+};
+
 export class QueryBuilder<S extends Schema<any, any, any, any, any>> {
   private model: Model<S>;
   private partitionKeyCondition?: KeyCondition<S, S["partitionKey"]>;
-  private sortKeyCondition?: KeyCondition<S, NonNullable<S["sortKey"]>>;
+  private sortKeyCondition?: SortKeyCondition<S>;
   private filterConditions: FilterCondition<S, keyof InferSchema<S>>[] = [];
   private limitCount?: number;
   private scanIndexForward?: boolean;
@@ -68,71 +79,132 @@ export class QueryBuilder<S extends Schema<any, any, any, any, any>> {
     this.model = model;
   }
 
-  /** Set partition key condition (required) */
-  where(
-    partitionKey: S["partitionKey"],
-    value: InferSchema<S>[S["partitionKey"]],
-    sortKey?: {
-      key: NonNullable<S["sortKey"]>;
-      operator: Exclude<KeyOperators, "=">;
-      value:
-        | InferSchema<S>[NonNullable<S["sortKey"]>]
-        | [
-            InferSchema<S>[NonNullable<S["sortKey"]>],
-            InferSchema<S>[NonNullable<S["sortKey"]>],
-          ];
-    },
-  ) {
-    this.partitionKeyCondition = { key: partitionKey, operator: "=", value };
-    if (sortKey) {
-      this.sortKeyCondition = {
-        key: sortKey.key,
-        operator: sortKey.operator,
-        value: sortKey.value,
-      };
-    }
+  private clone(): QueryBuilder<S> {
+    const qb = new QueryBuilder<S>(this.model);
+    Object.assign(qb, {
+      partitionKeyCondition: this.partitionKeyCondition,
+      sortKeyCondition: this.sortKeyCondition,
+      filterConditions: [...this.filterConditions],
+      limitCount: this.limitCount,
+      scanIndexForward: this.scanIndexForward,
+      ExclusiveStartKey: this.ExclusiveStartKey,
+      ProjectionAttributes: this.ProjectionAttributes,
+      indexName: this.indexName,
+      consistent: this.consistent,
+    });
+    return qb;
+  }
+
+  wherePK(value: InferSchema<S>[S["partitionKey"]]) {
+    this.partitionKeyCondition = {
+      key: this.model.schema.partitionKey,
+      operator: "=",
+      value,
+    };
     return this;
   }
 
-  /** Add filter conditions */
+  whereSK(
+    operator: Exclude<KeyOperators, "BETWEEN" | "begins_with">,
+    value: InferSchema<S>[NonNullable<S["sortKey"]>],
+  ): this;
+  whereSK(
+    operator: "BETWEEN",
+    value: [
+      InferSchema<S>[NonNullable<S["sortKey"]>],
+      InferSchema<S>[NonNullable<S["sortKey"]>],
+    ],
+  ): this;
+  whereSK(
+    operator: "begins_with",
+    value: InferSchema<S>[NonNullable<S["sortKey"]>],
+  ): this;
+  whereSK(operator: KeyOperators, value: any): this {
+    if (!this.model.schema.sortKey) {
+      throw new Error("Table has no sort key to query on.");
+    }
+
+    if (
+      operator === "BETWEEN" &&
+      (!Array.isArray(value) || value.length !== 2)
+    ) {
+      throw new Error("BETWEEN operator requires an array of two values.");
+    }
+    if (operator === "begins_with" && Array.isArray(value)) {
+      throw new Error("begins_with operator requires a single value.");
+    }
+
+    this.sortKeyCondition = {
+      key: this.model.schema.sortKey,
+      operator,
+      value,
+    };
+    return this;
+  }
+
+  filter<K extends keyof InferSchema<S>>(
+    key: K,
+    operator: Exclude<
+      FilterOperators,
+      "IN" | "attribute_exists" | "attribute_not_exists"
+    >,
+    value: InferSchema<S>[K],
+    join?: "AND" | "OR",
+  ): this;
+  filter<K extends keyof InferSchema<S>>(
+    key: K,
+    operator: "IN",
+    value: InferSchema<S>[K][],
+    join?: "AND" | "OR",
+  ): this;
+  filter<K extends keyof InferSchema<S>>(
+    key: K,
+    operator: "attribute_exists" | "attribute_not_exists",
+    value?: never,
+    join?: "AND" | "OR",
+  ): this;
   filter<K extends keyof InferSchema<S>>(
     key: K,
     operator: FilterOperators,
     value?: InferSchema<S>[K] | InferSchema<S>[K][],
     join: "AND" | "OR" = "AND",
-  ) {
-    if (operator === "IN" && !Array.isArray(value)) {
-      throw new Error("IN operator requires an array of values");
+  ): this {
+    if (value === undefined) {
+      throw new Error(
+        `Filter value for key "${String(key)}" cannot be undefined.`,
+      );
     }
+
+    if (operator === "IN") {
+      if (!Array.isArray(value) || value.length === 0) {
+        throw new Error("IN operator requires a non-empty array of values.");
+      }
+    }
+
     this.filterConditions.push({ key, operator, value, join });
     return this;
   }
 
-  /** Set limit */
   limit(count: number) {
     this.limitCount = count;
     return this;
   }
 
-  /** Set scan order */
   orderBy(asc: boolean) {
     this.scanIndexForward = asc;
     return this;
   }
 
-  /** Start key for pagination */
-  startKey(key: Record<string, any>) {
+  startKey(key?: Record<string, any>) {
     this.ExclusiveStartKey = key;
     return this;
   }
 
-  /** Projection attributes */
   project(attrs: Array<keyof InferSchema<S>>) {
     this.ProjectionAttributes = attrs;
     return this;
   }
 
-  /** Use a secondary index */
   onIndex(
     index: keyof S["globalSecondaryIndexes"] | keyof S["localSecondaryIndexes"],
   ) {
@@ -140,63 +212,114 @@ export class QueryBuilder<S extends Schema<any, any, any, any, any>> {
     return this;
   }
 
-  /** Consistent read */
   consistentRead(isConsistent = true) {
     this.consistent = isConsistent;
     return this;
   }
 
-  /** Build DynamoDB expressions */
-  private buildExpression() {
-    if (!this.partitionKeyCondition)
-      throw new Error("Partition key must be specified via where()");
+  private validateIndexKeys() {
+    if (!this.indexName) return;
 
-    const ExpressionAttributeNames: Record<string, string> = {};
-    const ExpressionAttributeValues: Record<string, any> = {};
-    let nameCounter = 0;
-    let valueCounter = 0;
+    const index = this.model.getIndex(this.indexName as string);
+    const indexPK = index.partitionKey;
+    const indexSK = index.sortKey;
 
+    if (this.partitionKeyCondition!.key !== indexPK) {
+      throw new Error(
+        `Partition key for query builder (${String(
+          this.partitionKeyCondition!.key,
+        )}) does not match index partition key (${String(indexPK)})`,
+      );
+    }
+
+    if (indexSK && this.sortKeyCondition?.key !== indexSK) {
+      throw new Error(
+        `Sort key for query builder (${String(
+          this.sortKeyCondition?.key,
+        )}) does not match index sort key (${String(indexSK)})`,
+      );
+    }
+  }
+
+  private buildKeyExpression(
+    ExpressionAttributeNames: Record<string, string>,
+    ExpressionAttributeValues: Record<string, any>,
+    nameCounter: { count: number },
+    valueCounter: { count: number },
+    valueMap: Map<any, string>,
+  ): string {
     const getName = (key: string) => {
       const existing = Object.entries(ExpressionAttributeNames).find(
         ([, v]) => v === key,
       );
       if (existing) return existing[0];
-      const name = `#a${nameCounter++}`;
+      const name = `#a${nameCounter.count++}`;
       ExpressionAttributeNames[name] = key;
       return name;
     };
 
-    // --- Key conditions ---
+    const getValue = (value: any) => {
+      if (valueMap.has(value)) {
+        return valueMap.get(value)!;
+      }
+      const name = `:v${valueCounter.count++}`;
+      ExpressionAttributeValues[name] = value;
+      valueMap.set(value, name);
+      return name;
+    };
+
     const keyConditions: string[] = [];
-    const pk = this.partitionKeyCondition;
+    const pk = this.partitionKeyCondition!;
     const pkName = getName(pk.key as string);
-    const pkValue = `:v${valueCounter++}`;
-    ExpressionAttributeValues[pkValue] = pk.value;
-    keyConditions.push(`${pkName} = ${pkValue}`);
+    keyConditions.push(`${pkName} = ${getValue(pk.value)}`);
 
     if (this.sortKeyCondition) {
       const sk = this.sortKeyCondition;
       const skName = getName(sk.key as string);
       if (sk.operator === "BETWEEN" && Array.isArray(sk.value)) {
-        const v1 = `:v${valueCounter++}`;
-        const v2 = `:v${valueCounter++}`;
-        ExpressionAttributeValues[v1] = sk.value[0];
-        ExpressionAttributeValues[v2] = sk.value[1];
-        keyConditions.push(`${skName} BETWEEN ${v1} AND ${v2}`);
+        keyConditions.push(
+          `${skName} BETWEEN ${getValue(sk.value[0])} AND ${getValue(
+            sk.value[1],
+          )}`,
+        );
       } else if (sk.operator === "begins_with") {
-        const v = `:v${valueCounter++}`;
-        ExpressionAttributeValues[v] = sk.value;
-        keyConditions.push(`begins_with(${skName}, ${v})`);
+        keyConditions.push(`begins_with(${skName}, ${getValue(sk.value)})`);
       } else {
-        const v = `:v${valueCounter++}`;
-        ExpressionAttributeValues[v] = sk.value;
-        keyConditions.push(`${skName} ${sk.operator} ${v}`);
+        keyConditions.push(`${skName} ${sk.operator} ${getValue(sk.value)}`);
       }
     }
+    return keyConditions.join(" AND ");
+  }
 
-    const KeyConditionExpression = keyConditions.join(" AND ");
+  private buildFilterExpression(
+    ExpressionAttributeNames: Record<string, string>,
+    ExpressionAttributeValues: Record<string, any>,
+    nameCounter: { count: number },
+    valueCounter: { count: number },
+    valueMap: Map<any, string>,
+  ): string | undefined {
+    const getName = (key: string) => {
+      const existing = Object.entries(ExpressionAttributeNames).find(
+        ([, v]) => v === key,
+      );
+      if (existing) return existing[0];
+      const name = `#a${nameCounter.count++}`;
+      ExpressionAttributeNames[name] = key;
+      return name;
+    };
 
-    // --- Filter expressions ---
+    const getValue = (value: any) => {
+      if (valueMap.has(value)) {
+        return valueMap.get(value)!;
+      }
+      const name = `:v${valueCounter.count++}`;
+      ExpressionAttributeValues[name] = value;
+      valueMap.set(value, name);
+      return name;
+    };
+
+    if (this.filterConditions.length === 0) return undefined;
+
     const filterExpr: string[] = [];
     this.filterConditions.forEach((f, i) => {
       const name = getName(f.key as string);
@@ -207,39 +330,85 @@ export class QueryBuilder<S extends Schema<any, any, any, any, any>> {
       ) {
         expr = `${f.operator}(${name})`;
       } else if (f.operator === "begins_with" || f.operator === "contains") {
-        const v = `:v${valueCounter++}`;
-        ExpressionAttributeValues[v] = f.value;
+        const v = getValue(f.value);
         expr = `${f.operator}(${name}, ${v})`;
       } else if (f.operator === "IN") {
-        const values = (f.value as any[]).map((v) => {
-          const p = `:v${valueCounter++}`;
-          ExpressionAttributeValues[p] = v;
-          return p;
-        });
+        const values = (f.value as any[]).map((v) => getValue(v));
         expr = `${name} IN (${values.join(", ")})`;
       } else {
-        const v = `:v${valueCounter++}`;
-        ExpressionAttributeValues[v] = f.value;
+        const v = getValue(f.value);
         expr = `${name} ${f.operator} ${v}`;
       }
       filterExpr.push(i > 0 ? `${f.join} ${expr}` : expr);
     });
+    return filterExpr.join(" ");
+  }
 
-    const ProjectionExpression = this.ProjectionAttributes?.length
-      ? this.ProjectionAttributes.map((a) => getName(a as string)).join(", ")
-      : undefined;
+  private buildProjectionExpression(
+    ExpressionAttributeNames: Record<string, string>,
+    nameCounter: { count: number },
+  ): string | undefined {
+    if (!this.ProjectionAttributes || this.ProjectionAttributes.length === 0) {
+      return undefined;
+    }
+    const getName = (key: string) => {
+      const existing = Object.entries(ExpressionAttributeNames).find(
+        ([, v]) => v === key,
+      );
+      if (existing) return existing[0];
+      const name = `#a${nameCounter.count++}`;
+      ExpressionAttributeNames[name] = key;
+      return name;
+    };
+    return this.ProjectionAttributes.map((a) => getName(a as string)).join(
+      ", ",
+    );
+  }
+
+  private buildExpression() {
+    if (!this.partitionKeyCondition) {
+      throw new Error("Partition key must be specified via wherePK()");
+    }
+    if (this.indexName) this.validateIndexKeys();
+
+    const ExpressionAttributeNames: Record<string, string> = {};
+    const ExpressionAttributeValues: Record<string, any> = {};
+    const nameCounter = { count: 0 };
+    const valueCounter = { count: 0 };
+    const valueMap = new Map<any, string>();
+
+    const KeyConditionExpression = this.buildKeyExpression(
+      ExpressionAttributeNames,
+      ExpressionAttributeValues,
+      nameCounter,
+      valueCounter,
+      valueMap,
+    );
+    const FilterExpression = this.buildFilterExpression(
+      ExpressionAttributeNames,
+      ExpressionAttributeValues,
+      nameCounter,
+      valueCounter,
+      valueMap,
+    );
+    const ProjectionExpression = this.buildProjectionExpression(
+      ExpressionAttributeNames,
+      nameCounter,
+    );
 
     return {
       KeyConditionExpression,
-      FilterExpression: filterExpr.length ? filterExpr.join(" ") : undefined,
+      FilterExpression,
       ExpressionAttributeNames,
       ExpressionAttributeValues: marshall(ExpressionAttributeValues),
       ProjectionExpression,
     };
   }
 
-  /** Execute query */
-  async exec(): Promise<InferSchema<S>[]> {
+  async exec(): Promise<{
+    items: InferSchema<S>[];
+    lastKey?: Record<string, any>;
+  }> {
     const {
       KeyConditionExpression,
       FilterExpression,
@@ -255,14 +424,41 @@ export class QueryBuilder<S extends Schema<any, any, any, any, any>> {
       FilterExpression,
       ExpressionAttributeNames,
       ExpressionAttributeValues,
+      ProjectionExpression,
       Limit: this.limitCount,
       ScanIndexForward: this.scanIndexForward,
       ExclusiveStartKey: this.ExclusiveStartKey,
       ConsistentRead: this.consistent,
-      ProjectionExpression,
     });
 
     const result = await this.model.sendCommand<QueryCommandOutput>(command);
-    return result.Items?.map((i) => unmarshall(i) as InferSchema<S>) || [];
+    return {
+      items: result.Items?.map((i) => unmarshall(i) as InferSchema<S>) || [],
+      lastKey: result.LastEvaluatedKey,
+    };
+  }
+
+  async *paginate(): AsyncGenerator<InferSchema<S>[], void, unknown> {
+    let nextKey = this.ExclusiveStartKey;
+    const queryBuilder = this.clone();
+
+    do {
+      if (nextKey) {
+        queryBuilder.startKey(nextKey);
+      }
+      const { items, lastKey } = await queryBuilder.exec();
+      if (items.length > 0) {
+        yield items;
+      }
+      nextKey = lastKey;
+    } while (nextKey);
+  }
+
+  async execAll(): Promise<InferSchema<S>[]> {
+    const results: InferSchema<S>[] = [];
+    for await (const page of this.paginate()) {
+      results.push(...page);
+    }
+    return results;
   }
 }
