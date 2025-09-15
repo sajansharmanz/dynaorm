@@ -139,32 +139,6 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     throw new Error(`Index ${indexName} does not exist`);
   }
 
-  private getIndexKeyValues(
-    indexName: string,
-    itemOrKey: Partial<InferSchema<S>>,
-  ) {
-    const index = this.getIndex(indexName);
-    const keyValues: Record<string, any> = {};
-
-    if (!(index.partitionKey in itemOrKey)) {
-      throw new Error(
-        `Partition key '${index.partitionKey}' for index '${indexName}' is missing`,
-      );
-    }
-    keyValues[index.partitionKey] = itemOrKey[index.partitionKey];
-
-    if (index.sortKey) {
-      if (!(index.sortKey in itemOrKey)) {
-        throw new Error(
-          `Sort key '${index.sortKey}' for index '${indexName}' is missing`,
-        );
-      }
-      keyValues[index.sortKey] = itemOrKey[index.sortKey];
-    }
-
-    return keyValues;
-  }
-
   private getNameHelper() {
     let nameCounter = 0;
     const map = new Map<string, string>();
