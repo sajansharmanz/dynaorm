@@ -164,14 +164,14 @@ await userModel.transactWrite([
 
 ## API Reference
 
-### createClient(schemas, options)
+### `createClient(schemas, options)`
 
 Initializes the DynamoDB client and attaches models for each schema.
 
 - **schemas**: A record mapping model names to schemas.
 - **options**: Contains `config` (DynamoDBClientConfig), optional `modelOptions`, and optional `perModelOptions`.
 
-### defineSchema(schema)
+### `defineSchema(schema)`
 
 Defines a new DynamoDB table schema with strong typing.
 
@@ -182,7 +182,7 @@ Defines a new DynamoDB table schema with strong typing.
 - **globalSecondaryIndexes**?: Optional GSIs.
 - **localSecondaryIndexes**?: Optional LSIs.
 
-### Model<S>
+### `Model<S>`
 
 Provides methods for interacting with a DynamoDB table.
 
@@ -212,7 +212,7 @@ Provides methods for interacting with a DynamoDB table.
 - `updateMany(items)`
 - `deleteMany(partitionKeyValue, sortKeyCondition?)`
 
-### QueryBuilder<S>
+### `QueryBuilder<S>`
 
 Fluent API for building DynamoDB Query operations.
 
