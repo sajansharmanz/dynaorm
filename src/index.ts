@@ -1,7 +1,4 @@
-import { defineSchema, type InferSchema } from "./schema.js";
-
-import { createClient } from "./client.js";
-
-export { defineSchema, createClient };
-
-export type { InferSchema };
+export * from "./client.js";
+export * from "./model.js";
+export * from "./query-builder.js";
+export * from "./schema.js";
