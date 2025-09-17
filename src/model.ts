@@ -83,6 +83,12 @@ type FilterOperators =
   | "attribute_exists"
   | "attribute_not_exists";
 
+type FilterInput<S extends Schema<any, any, any, any, any>> = {
+  [K in keyof InferSchema<S>]?:
+    | { __operation: FilterOperators; value: InferSchema<S>[K] }
+    | InferSchema<S>[K];
+};
+
 function chunk<T>(arr: T[], size: number): T[][] {
   const result: T[][] = [];
   for (let i = 0; i < arr.length; i += size)
@@ -197,16 +203,16 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       if (op === "BETWEEN" && Array.isArray(val) && val.length === 2) {
         const vp1 = `:v${valueCounter++}`;
         const vp2 = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp1] = val[0];
-        ExpressionAttributeValues[vp2] = val[1];
+        ExpressionAttributeValues[vp1] = awsMarshall({ v: val[0] }).v;
+        ExpressionAttributeValues[vp2] = awsMarshall({ v: val[1] }).v;
         conditions.push(`${namePlaceholder} BETWEEN ${vp1} AND ${vp2}`);
       } else if (op === "begins_with") {
         const vp = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp] = val;
+        ExpressionAttributeValues[vp] = awsMarshall({ v: val }).v;
         conditions.push(`begins_with(${namePlaceholder}, ${vp})`);
       } else {
         const vp = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp] = val;
+        ExpressionAttributeValues[vp] = awsMarshall({ v: val }).v;
         conditions.push(`${namePlaceholder} ${op} ${vp}`);
       }
 
@@ -216,7 +222,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return {
       KeyConditionExpression: conditions.join(" AND "),
       ExpressionAttributeNames,
-      ExpressionAttributeValues: this.marshall(ExpressionAttributeValues),
+      ExpressionAttributeValues,
     };
   }
 
@@ -238,7 +244,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       const isOperatorObject =
         val != null &&
         typeof val === "object" &&
-        "__operation" in val! &&
+        "__operation" in val &&
         "value" in val;
 
       const operator = isOperatorObject ? (val as any).__operation : "=";
@@ -252,12 +258,12 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       ) {
         const vp1 = `:v${valueCounter++}`;
         const vp2 = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp1] = value[0];
-        ExpressionAttributeValues[vp2] = value[1];
+        ExpressionAttributeValues[vp1] = awsMarshall({ v: value[0] }).v;
+        ExpressionAttributeValues[vp2] = awsMarshall({ v: value[1] }).v;
         FilterExpression.push(`${namePlaceholder} BETWEEN ${vp1} AND ${vp2}`);
       } else if (operator === "begins_with" || operator === "contains") {
         const vp = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp] = value;
+        ExpressionAttributeValues[vp] = awsMarshall({ v: value }).v;
         FilterExpression.push(`${operator}(${namePlaceholder}, ${vp})`);
       } else if (
         operator === "attribute_exists" ||
@@ -266,7 +272,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
         FilterExpression.push(`${operator}(${namePlaceholder})`);
       } else {
         const vp = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp] = value;
+        ExpressionAttributeValues[vp] = awsMarshall({ v: value }).v;
         FilterExpression.push(`${namePlaceholder} ${operator} ${vp}`);
       }
 
@@ -276,7 +282,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return {
       FilterExpression: FilterExpression.join(" AND "),
       ExpressionAttributeNames,
-      ExpressionAttributeValues: this.marshall(ExpressionAttributeValues),
+      ExpressionAttributeValues,
     };
   }
 
@@ -299,7 +305,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
 
       if (this.isAtomicOperation(val)) {
         const vp = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp] = val.value;
+        ExpressionAttributeValues[vp] = awsMarshall({ v: val.value }).v;
 
         if (val.__operation === "increment") {
           setExpressions.push(
@@ -314,27 +320,29 @@ export class Model<S extends Schema<any, any, any, any, any>> {
         }
       } else {
         const vp = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp] = val;
+        ExpressionAttributeValues[vp] = awsMarshall({ v: val }).v;
         setExpressions.push(`${namePlaceholder} = ${vp}`);
       }
     }
 
-    if (!setExpressions.length && !addExpressions.length)
+    if (!setExpressions.length && !addExpressions.length) {
       return {
         UpdateExpression: null,
         ExpressionAttributeNames: null,
         ExpressionAttributeValues: null,
       };
+    }
 
     const UpdateExpression: string[] = [];
     if (setExpressions.length)
       UpdateExpression.push("SET " + setExpressions.join(", "));
     if (addExpressions.length)
       UpdateExpression.push("ADD " + addExpressions.join(" "));
+
     return {
       UpdateExpression: UpdateExpression.join(" "),
       ExpressionAttributeNames,
-      ExpressionAttributeValues: this.marshall(ExpressionAttributeValues),
+      ExpressionAttributeValues,
     };
   }
 
@@ -459,9 +467,9 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return new QueryBuilder(this);
   }
 
-  async findMany<K extends S["sortKey"]>(
+  async findMany<K extends keyof InferSchema<S>>(
     partitionKeyValue: PartitionKeyValue<S>,
-    sortKeyCondition?: K extends keyof InferSchema<S>
+    sortKeyCondition?: S["sortKey"] extends K
       ? {
           operator: KeyOperators;
           value: InferSchema<S>[K] | [InferSchema<S>[K], InferSchema<S>[K]];
@@ -473,7 +481,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       attributes?: Array<keyof InferSchema<S>>;
     },
   ): Promise<InferSchema<S>[]> {
-    // Build keyValues with proper typing
+    // Build keyValues
     const keyValues = this.sortKey
       ? ({
           [this.partitionKey]: partitionKeyValue,
@@ -484,13 +492,16 @@ export class Model<S extends Schema<any, any, any, any, any>> {
           typeof this.partitionKey
         >);
 
+    // Build operators
     const operators: Partial<Record<keyof typeof keyValues, KeyOperators>> = {};
     if (this.sortKey && sortKeyCondition)
       operators[this.sortKey] = sortKeyCondition.operator;
 
+    // Build projection expression
     const projection = this.buildProjectionExpression(options?.attributes);
     const results: InferSchema<S>[] = [];
 
+    // Paginate the query
     for await (const items of this.paginateQuery(
       (ExclusiveStartKey?: Record<string, any>) =>
         new QueryCommand({
@@ -529,6 +540,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     },
   ): Promise<InferSchema<S>[]> {
     this.getIndex(String(indexName));
+
     const projection = this.buildProjectionExpression(options?.attributes);
     const results: InferSchema<S>[] = [];
 
