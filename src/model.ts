@@ -197,16 +197,28 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       if (op === "BETWEEN" && Array.isArray(val) && val.length === 2) {
         const vp1 = `:v${valueCounter++}`;
         const vp2 = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp1] = awsMarshall({ v: val[0] }).v;
-        ExpressionAttributeValues[vp2] = awsMarshall({ v: val[1] }).v;
+        ExpressionAttributeValues[vp1] = awsMarshall(
+          { v: val[0] },
+          { removeUndefinedValues: true },
+        ).v;
+        ExpressionAttributeValues[vp2] = awsMarshall(
+          { v: val[1] },
+          { removeUndefinedValues: true },
+        ).v;
         conditions.push(`${namePlaceholder} BETWEEN ${vp1} AND ${vp2}`);
       } else if (op === "begins_with") {
         const vp = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp] = awsMarshall({ v: val }).v;
+        ExpressionAttributeValues[vp] = awsMarshall(
+          { v: val },
+          { removeUndefinedValues: true },
+        ).v;
         conditions.push(`begins_with(${namePlaceholder}, ${vp})`);
       } else {
         const vp = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp] = awsMarshall({ v: val }).v;
+        ExpressionAttributeValues[vp] = awsMarshall(
+          { v: val },
+          { removeUndefinedValues: true },
+        ).v;
         conditions.push(`${namePlaceholder} ${op} ${vp}`);
       }
 
@@ -252,12 +264,21 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       ) {
         const vp1 = `:v${valueCounter++}`;
         const vp2 = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp1] = awsMarshall({ v: value[0] }).v;
-        ExpressionAttributeValues[vp2] = awsMarshall({ v: value[1] }).v;
+        ExpressionAttributeValues[vp1] = awsMarshall(
+          { v: value[0] },
+          { removeUndefinedValues: true },
+        ).v;
+        ExpressionAttributeValues[vp2] = awsMarshall(
+          { v: value[1] },
+          { removeUndefinedValues: true },
+        ).v;
         FilterExpression.push(`${namePlaceholder} BETWEEN ${vp1} AND ${vp2}`);
       } else if (operator === "begins_with" || operator === "contains") {
         const vp = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp] = awsMarshall({ v: value }).v;
+        ExpressionAttributeValues[vp] = awsMarshall(
+          { v: value },
+          { removeUndefinedValues: true },
+        ).v;
         FilterExpression.push(`${operator}(${namePlaceholder}, ${vp})`);
       } else if (
         operator === "attribute_exists" ||
@@ -266,7 +287,10 @@ export class Model<S extends Schema<any, any, any, any, any>> {
         FilterExpression.push(`${operator}(${namePlaceholder})`);
       } else {
         const vp = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp] = awsMarshall({ v: value }).v;
+        ExpressionAttributeValues[vp] = awsMarshall(
+          { v: value },
+          { removeUndefinedValues: true },
+        ).v;
         FilterExpression.push(`${namePlaceholder} ${operator} ${vp}`);
       }
 
@@ -299,7 +323,10 @@ export class Model<S extends Schema<any, any, any, any, any>> {
 
       if (this.isAtomicOperation(val)) {
         const vp = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp] = awsMarshall({ v: val.value }).v;
+        ExpressionAttributeValues[vp] = awsMarshall(
+          { v: val.value },
+          { removeUndefinedValues: true },
+        ).v;
 
         if (val.__operation === "increment") {
           setExpressions.push(
@@ -314,7 +341,10 @@ export class Model<S extends Schema<any, any, any, any, any>> {
         }
       } else {
         const vp = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp] = awsMarshall({ v: val }).v;
+        ExpressionAttributeValues[vp] = awsMarshall(
+          { v: val },
+          { removeUndefinedValues: true },
+        ).v;
         setExpressions.push(`${namePlaceholder} = ${vp}`);
       }
     }
