@@ -608,8 +608,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     if (!items.length) return;
 
     const batchOps = items.map((item) => ({
-      type: "delete" as const,
-      item: {
+      key: {
         [this.partitionKey]: item[this.partitionKey],
         ...(this.sortKey ? { [this.sortKey]: item[this.sortKey] } : {}),
       } as Key<S>,
@@ -617,11 +616,13 @@ export class Model<S extends Schema<any, any, any, any, any>> {
 
     if (batchOps.length <= 100) {
       await this.transactWrite(
-        batchOps.map((op) => ({ type: "delete", key: op.item })),
+        batchOps.map((op) => ({ type: "delete", key: op.key })),
       );
     } else {
       console.warn("deleteByIndex is not atomic for >100 items");
-      await this.batchWrite(batchOps);
+      await this.batchWrite(
+        batchOps.map((op) => ({ type: "delete" as const, item: op.key })),
+      );
     }
   }
 
@@ -914,28 +915,26 @@ export class Model<S extends Schema<any, any, any, any, any>> {
 
     for (const chunkItems of chunksOf25) {
       const TransactItems = chunkItems.map(({ key, updates }) => {
-        const cleanedUpdates = Object.fromEntries(
-          Object.entries(updates).filter(([_, v]) => v !== undefined),
-        ) as Partial<InferSchema<S>>;
-
         const {
           UpdateExpression,
           ExpressionAttributeNames,
           ExpressionAttributeValues,
-        } = this.buildUpdateExpression(cleanedUpdates);
-
+        } = this.buildUpdateExpression(updates);
         if (!UpdateExpression)
           throw new Error("Update must include at least one attribute");
 
-        return {
-          Update: {
-            TableName: this.tableName,
-            Key: this.marshall(key),
-            UpdateExpression,
-            ExpressionAttributeNames,
-            ExpressionAttributeValues,
-          },
+        const cmd: any = {
+          TableName: this.tableName,
+          Key: this.marshall(key),
+          UpdateExpression,
         };
+
+        if (ExpressionAttributeNames)
+          cmd.ExpressionAttributeNames = ExpressionAttributeNames;
+        if (ExpressionAttributeValues)
+          cmd.ExpressionAttributeValues = ExpressionAttributeValues;
+
+        return { Update: cmd };
       });
 
       await this.sendCommand<void>(
@@ -958,20 +957,25 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     const items = await this.findMany(partitionKeyValue, sortKeyCondition);
     if (!items.length) return;
 
-    const batchOps = items.map((item) => ({
-      type: "delete" as const,
-      item: {
-        [this.partitionKey]: item[this.partitionKey],
-        ...(this.sortKey ? { [this.sortKey]: item[this.sortKey] } : {}),
-      } as Key<S>,
-    }));
-
-    if (batchOps.length <= 100) {
+    if (items.length <= 100) {
       await this.transactWrite(
-        batchOps.map((op) => ({ type: "delete", key: op.item })),
+        items.map((item) => ({
+          type: "delete",
+          key: {
+            [this.partitionKey]: item[this.partitionKey],
+            ...(this.sortKey ? { [this.sortKey]: item[this.sortKey] } : {}),
+          } as Key<S>,
+        })),
       );
     } else {
       console.warn("deleteMany is not atomic for >100 items");
+      const batchOps = items.map((item) => ({
+        type: "delete" as const,
+        item: {
+          [this.partitionKey]: item[this.partitionKey],
+          ...(this.sortKey ? { [this.sortKey]: item[this.sortKey] } : {}),
+        } as Key<S>,
+      }));
       await this.batchWrite(batchOps);
     }
   }

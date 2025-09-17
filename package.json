@@ -1,6 +1,6 @@
 {
   "name": "dynaorm",
-  "version": "1.0.16",
+  "version": "1.0.17",
   "description": "A type-safe DynamoDB ORM",
   "keywords": [
     "AWS",
