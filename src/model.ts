@@ -83,12 +83,6 @@ type FilterOperators =
   | "attribute_exists"
   | "attribute_not_exists";
 
-type FilterInput<S extends Schema<any, any, any, any, any>> = {
-  [K in keyof InferSchema<S>]?:
-    | { __operation: FilterOperators; value: InferSchema<S>[K] }
-    | InferSchema<S>[K];
-};
-
 function chunk<T>(arr: T[], size: number): T[][] {
   const result: T[][] = [];
   for (let i = 0; i < arr.length; i += size)
