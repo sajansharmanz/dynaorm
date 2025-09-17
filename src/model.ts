@@ -491,9 +491,9 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return new QueryBuilder(this);
   }
 
-  async findMany<K extends keyof InferSchema<S>>(
+  async findMany<K extends S["sortKey"]>(
     partitionKeyValue: PartitionKeyValue<S>,
-    sortKeyCondition?: S["sortKey"] extends K
+    sortKeyCondition?: K extends keyof InferSchema<S>
       ? {
           operator: KeyOperators;
           value: InferSchema<S>[K] | [InferSchema<S>[K], InferSchema<S>[K]];
@@ -505,37 +505,40 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       attributes?: Array<keyof InferSchema<S>>;
     },
   ): Promise<InferSchema<S>[]> {
-    // Build keyValues
     const keyValues = this.sortKey
       ? ({
           [this.partitionKey]: partitionKeyValue,
           [this.sortKey]: sortKeyCondition?.value,
-        } as Pick<InferSchema<S>, typeof this.partitionKey | S["sortKey"]>)
-      : ({ [this.partitionKey]: partitionKeyValue } as Pick<
-          InferSchema<S>,
-          typeof this.partitionKey
-        >);
+        } as Partial<InferSchema<S>>)
+      : ({ [this.partitionKey]: partitionKeyValue } as Partial<InferSchema<S>>);
 
-    // Build operators
-    const operators: Partial<Record<keyof typeof keyValues, KeyOperators>> = {};
+    const cleanedKeyValues = Object.fromEntries(
+      Object.entries(keyValues).filter(([_, v]) => v !== undefined),
+    ) as Partial<InferSchema<S>>;
+
+    const operators: Partial<
+      Record<keyof typeof cleanedKeyValues, KeyOperators>
+    > = {};
     if (this.sortKey && sortKeyCondition)
       operators[this.sortKey] = sortKeyCondition.operator;
 
-    // Build projection expression
     const projection = this.buildProjectionExpression(options?.attributes);
     const results: InferSchema<S>[] = [];
 
-    // Paginate the query
     for await (const items of this.paginateQuery(
       (ExclusiveStartKey?: Record<string, any>) =>
         new QueryCommand({
           TableName: this.tableName,
-          ...this.buildKeyCondition(keyValues, operators),
+          ...this.buildKeyCondition(
+            cleanedKeyValues as Pick<
+              InferSchema<S>,
+              keyof typeof cleanedKeyValues
+            >,
+            operators,
+          ),
           ProjectionExpression: projection.ProjectionExpression,
           ExpressionAttributeNames: {
             ...projection.ExpressionAttributeNames,
-            ...this.buildKeyCondition(keyValues, operators)
-              .ExpressionAttributeNames,
           },
           Limit: options?.limit,
           ExclusiveStartKey,
@@ -565,10 +568,17 @@ export class Model<S extends Schema<any, any, any, any, any>> {
   ): Promise<InferSchema<S>[]> {
     this.getIndex(String(indexName));
 
+    const cleanedKeyValues = Object.fromEntries(
+      Object.entries(keyValues).filter(([_, v]) => v !== undefined),
+    ) as Partial<InferSchema<S>>;
+
     const projection = this.buildProjectionExpression(options?.attributes);
     const results: InferSchema<S>[] = [];
 
-    const keyCondition = this.buildKeyCondition(keyValues, options?.operators);
+    const keyCondition = this.buildKeyCondition(
+      cleanedKeyValues as Pick<InferSchema<S>, keyof typeof cleanedKeyValues>,
+      options?.operators,
+    );
 
     for await (const items of this.paginateQuery(
       (ExclusiveStartKey?: Record<string, any>) =>
@@ -604,19 +614,19 @@ export class Model<S extends Schema<any, any, any, any, any>> {
 
     const batchOps = items.map((item) => ({
       type: "delete" as const,
-      key: {
+      item: {
         [this.partitionKey]: item[this.partitionKey],
         ...(this.sortKey ? { [this.sortKey]: item[this.sortKey] } : {}),
       } as Key<S>,
     }));
 
     if (batchOps.length <= 100) {
-      await this.transactWrite(batchOps);
+      await this.transactWrite(
+        batchOps.map((op) => ({ type: "delete", key: op.item })),
+      );
     } else {
       console.warn("deleteByIndex is not atomic for >100 items");
-      await this.batchWrite(
-        batchOps.map((op) => ({ type: "delete" as const, item: op.key })),
-      );
+      await this.batchWrite(batchOps);
     }
   }
 
@@ -897,15 +907,22 @@ export class Model<S extends Schema<any, any, any, any, any>> {
   ) {
     if (!items.length) return;
     const chunksOf25 = chunk(items, 25);
+
     for (const chunkItems of chunksOf25) {
       const TransactItems = chunkItems.map(({ key, updates }) => {
+        const cleanedUpdates = Object.fromEntries(
+          Object.entries(updates).filter(([_, v]) => v !== undefined),
+        ) as Partial<InferSchema<S>>;
+
         const {
           UpdateExpression,
           ExpressionAttributeNames,
           ExpressionAttributeValues,
-        } = this.buildUpdateExpression(updates);
+        } = this.buildUpdateExpression(cleanedUpdates);
+
         if (!UpdateExpression)
           throw new Error("Update must include at least one attribute");
+
         return {
           Update: {
             TableName: this.tableName,
@@ -916,6 +933,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
           },
         };
       });
+
       await this.sendCommand<void>(
         new TransactWriteItemsCommand({ TransactItems }),
       );
@@ -936,25 +954,20 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     const items = await this.findMany(partitionKeyValue, sortKeyCondition);
     if (!items.length) return;
 
-    if (items.length <= 100) {
+    const batchOps = items.map((item) => ({
+      type: "delete" as const,
+      item: {
+        [this.partitionKey]: item[this.partitionKey],
+        ...(this.sortKey ? { [this.sortKey]: item[this.sortKey] } : {}),
+      } as Key<S>,
+    }));
+
+    if (batchOps.length <= 100) {
       await this.transactWrite(
-        items.map((item) => ({
-          type: "delete",
-          key: {
-            [this.partitionKey]: item[this.partitionKey],
-            ...(this.sortKey ? { [this.sortKey]: item[this.sortKey] } : {}),
-          } as Key<S>,
-        })),
+        batchOps.map((op) => ({ type: "delete", key: op.item })),
       );
     } else {
       console.warn("deleteMany is not atomic for >100 items");
-      const batchOps = items.map((item) => ({
-        type: "delete" as const,
-        item: {
-          [this.partitionKey]: item[this.partitionKey],
-          ...(this.sortKey ? { [this.sortKey]: item[this.sortKey] } : {}),
-        } as Key<S>,
-      }));
       await this.batchWrite(batchOps);
     }
   }
