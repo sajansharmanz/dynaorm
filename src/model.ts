@@ -161,10 +161,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return awsMarshall(data, { removeUndefinedValues: true });
   }
 
-  private buildProjectionExpression(attributes?: Array<keyof InferSchema<S>>): {
-    ProjectionExpression?: string;
-    ExpressionAttributeNames?: Record<string, string>;
-  } {
+  private buildProjectionExpression(attributes?: Array<keyof InferSchema<S>>) {
     if (!attributes?.length) return {};
     const getName = this.getNameHelper();
     const names: Record<string, string> = {};
@@ -175,7 +172,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     });
     return {
       ProjectionExpression: projection.join(", "),
-      ExpressionAttributeNames: names,
+      ExpressionAttributeNames: Object.keys(names).length ? names : undefined,
     };
   }
 
@@ -197,28 +194,16 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       if (op === "BETWEEN" && Array.isArray(val) && val.length === 2) {
         const vp1 = `:v${valueCounter++}`;
         const vp2 = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp1] = awsMarshall(
-          { v: val[0] },
-          { removeUndefinedValues: true },
-        ).v;
-        ExpressionAttributeValues[vp2] = awsMarshall(
-          { v: val[1] },
-          { removeUndefinedValues: true },
-        ).v;
+        ExpressionAttributeValues[vp1] = awsMarshall({ v: val[0] }).v;
+        ExpressionAttributeValues[vp2] = awsMarshall({ v: val[1] }).v;
         conditions.push(`${namePlaceholder} BETWEEN ${vp1} AND ${vp2}`);
       } else if (op === "begins_with") {
         const vp = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp] = awsMarshall(
-          { v: val },
-          { removeUndefinedValues: true },
-        ).v;
+        ExpressionAttributeValues[vp] = awsMarshall({ v: val }).v;
         conditions.push(`begins_with(${namePlaceholder}, ${vp})`);
       } else {
         const vp = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp] = awsMarshall(
-          { v: val },
-          { removeUndefinedValues: true },
-        ).v;
+        ExpressionAttributeValues[vp] = awsMarshall({ v: val }).v;
         conditions.push(`${namePlaceholder} ${op} ${vp}`);
       }
 
@@ -227,8 +212,12 @@ export class Model<S extends Schema<any, any, any, any, any>> {
 
     return {
       KeyConditionExpression: conditions.join(" AND "),
-      ExpressionAttributeNames,
-      ExpressionAttributeValues,
+      ExpressionAttributeNames: Object.keys(ExpressionAttributeNames).length
+        ? ExpressionAttributeNames
+        : undefined,
+      ExpressionAttributeValues: Object.keys(ExpressionAttributeValues).length
+        ? ExpressionAttributeValues
+        : undefined,
     };
   }
 
@@ -264,21 +253,12 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       ) {
         const vp1 = `:v${valueCounter++}`;
         const vp2 = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp1] = awsMarshall(
-          { v: value[0] },
-          { removeUndefinedValues: true },
-        ).v;
-        ExpressionAttributeValues[vp2] = awsMarshall(
-          { v: value[1] },
-          { removeUndefinedValues: true },
-        ).v;
+        ExpressionAttributeValues[vp1] = awsMarshall({ v: value[0] }).v;
+        ExpressionAttributeValues[vp2] = awsMarshall({ v: value[1] }).v;
         FilterExpression.push(`${namePlaceholder} BETWEEN ${vp1} AND ${vp2}`);
       } else if (operator === "begins_with" || operator === "contains") {
         const vp = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp] = awsMarshall(
-          { v: value },
-          { removeUndefinedValues: true },
-        ).v;
+        ExpressionAttributeValues[vp] = awsMarshall({ v: value }).v;
         FilterExpression.push(`${operator}(${namePlaceholder}, ${vp})`);
       } else if (
         operator === "attribute_exists" ||
@@ -287,10 +267,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
         FilterExpression.push(`${operator}(${namePlaceholder})`);
       } else {
         const vp = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp] = awsMarshall(
-          { v: value },
-          { removeUndefinedValues: true },
-        ).v;
+        ExpressionAttributeValues[vp] = awsMarshall({ v: value }).v;
         FilterExpression.push(`${namePlaceholder} ${operator} ${vp}`);
       }
 
@@ -298,9 +275,15 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     }
 
     return {
-      FilterExpression: FilterExpression.join(" AND "),
-      ExpressionAttributeNames,
-      ExpressionAttributeValues,
+      FilterExpression: FilterExpression.length
+        ? FilterExpression.join(" AND ")
+        : undefined,
+      ExpressionAttributeNames: Object.keys(ExpressionAttributeNames).length
+        ? ExpressionAttributeNames
+        : undefined,
+      ExpressionAttributeValues: Object.keys(ExpressionAttributeValues).length
+        ? ExpressionAttributeValues
+        : undefined,
     };
   }
 
@@ -491,7 +474,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return new QueryBuilder(this);
   }
 
-  async findMany<K extends S["sortKey"]>(
+  async findMany<K extends keyof InferSchema<S>>(
     partitionKeyValue: PartitionKeyValue<S>,
     sortKeyCondition?: K extends keyof InferSchema<S>
       ? {
@@ -509,41 +492,49 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       ? ({
           [this.partitionKey]: partitionKeyValue,
           [this.sortKey]: sortKeyCondition?.value,
-        } as Partial<InferSchema<S>>)
-      : ({ [this.partitionKey]: partitionKeyValue } as Partial<InferSchema<S>>);
+        } as Pick<InferSchema<S>, typeof this.partitionKey | S["sortKey"]>)
+      : ({ [this.partitionKey]: partitionKeyValue } as Pick<
+          InferSchema<S>,
+          typeof this.partitionKey
+        >);
 
-    const cleanedKeyValues = Object.fromEntries(
-      Object.entries(keyValues).filter(([_, v]) => v !== undefined),
-    ) as Partial<InferSchema<S>>;
-
-    const operators: Partial<
-      Record<keyof typeof cleanedKeyValues, KeyOperators>
-    > = {};
+    const operators: Partial<Record<keyof typeof keyValues, KeyOperators>> = {};
     if (this.sortKey && sortKeyCondition)
       operators[this.sortKey] = sortKeyCondition.operator;
 
     const projection = this.buildProjectionExpression(options?.attributes);
     const results: InferSchema<S>[] = [];
 
+    const keyCondition = this.buildKeyCondition(keyValues, operators);
+
     for await (const items of this.paginateQuery(
-      (ExclusiveStartKey?: Record<string, any>) =>
-        new QueryCommand({
+      (ExclusiveStartKey?: Record<string, any>) => {
+        const cmdParams: any = {
           TableName: this.tableName,
-          ...this.buildKeyCondition(
-            cleanedKeyValues as Pick<
-              InferSchema<S>,
-              keyof typeof cleanedKeyValues
-            >,
-            operators,
-          ),
+          KeyConditionExpression: keyCondition.KeyConditionExpression,
           ProjectionExpression: projection.ProjectionExpression,
-          ExpressionAttributeNames: {
-            ...projection.ExpressionAttributeNames,
-          },
           Limit: options?.limit,
           ExclusiveStartKey,
           ConsistentRead: options?.consistentRead,
-        }),
+        };
+
+        if (
+          keyCondition.ExpressionAttributeNames ||
+          projection.ExpressionAttributeNames
+        ) {
+          cmdParams.ExpressionAttributeNames = {
+            ...(keyCondition.ExpressionAttributeNames ?? {}),
+            ...(projection.ExpressionAttributeNames ?? {}),
+          };
+        }
+
+        if (keyCondition.ExpressionAttributeValues) {
+          cmdParams.ExpressionAttributeValues =
+            keyCondition.ExpressionAttributeValues;
+        }
+
+        return new QueryCommand(cmdParams);
+      },
     )) {
       results.push(...items);
       if (options?.limit && results.length >= options.limit) break;
@@ -567,35 +558,39 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     },
   ): Promise<InferSchema<S>[]> {
     this.getIndex(String(indexName));
-
-    const cleanedKeyValues = Object.fromEntries(
-      Object.entries(keyValues).filter(([_, v]) => v !== undefined),
-    ) as Partial<InferSchema<S>>;
-
     const projection = this.buildProjectionExpression(options?.attributes);
     const results: InferSchema<S>[] = [];
-
-    const keyCondition = this.buildKeyCondition(
-      cleanedKeyValues as Pick<InferSchema<S>, keyof typeof cleanedKeyValues>,
-      options?.operators,
-    );
+    const keyCondition = this.buildKeyCondition(keyValues, options?.operators);
 
     for await (const items of this.paginateQuery(
-      (ExclusiveStartKey?: Record<string, any>) =>
-        new QueryCommand({
+      (ExclusiveStartKey?: Record<string, any>) => {
+        const cmdParams: any = {
           TableName: this.tableName,
           IndexName: String(indexName),
           KeyConditionExpression: keyCondition.KeyConditionExpression,
-          ExpressionAttributeNames: {
-            ...projection.ExpressionAttributeNames,
-            ...keyCondition.ExpressionAttributeNames,
-          },
-          ExpressionAttributeValues: keyCondition.ExpressionAttributeValues,
           ProjectionExpression: projection.ProjectionExpression,
           Limit: options?.limit,
           ExclusiveStartKey,
           ConsistentRead: options?.consistentRead,
-        }),
+        };
+
+        if (
+          keyCondition.ExpressionAttributeNames ||
+          projection.ExpressionAttributeNames
+        ) {
+          cmdParams.ExpressionAttributeNames = {
+            ...(keyCondition.ExpressionAttributeNames ?? {}),
+            ...(projection.ExpressionAttributeNames ?? {}),
+          };
+        }
+
+        if (keyCondition.ExpressionAttributeValues) {
+          cmdParams.ExpressionAttributeValues =
+            keyCondition.ExpressionAttributeValues;
+        }
+
+        return new QueryCommand(cmdParams);
+      },
     )) {
       results.push(...items);
       if (options?.limit && results.length >= options.limit) break;
@@ -681,28 +676,37 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     const results: InferSchema<S>[] = [];
     let remaining = options?.limit ?? Infinity;
 
-    const {
-      FilterExpression,
-      ExpressionAttributeNames,
-      ExpressionAttributeValues,
-    } = this.buildFilterExpression(options?.filter);
+    const filterExpr = this.buildFilterExpression(options?.filter);
     const projection = this.buildProjectionExpression(options?.attributes);
 
     do {
-      const result = await this.sendCommand<ScanCommandOutput>(
-        new ScanCommand({
-          TableName: this.tableName,
-          FilterExpression,
-          ExpressionAttributeNames,
-          ExpressionAttributeValues,
-          ExclusiveStartKey,
-          Limit: remaining,
-          ProjectionExpression: projection.ProjectionExpression,
-          Segment: options?.segment,
-          TotalSegments: options?.totalSegments,
-        }),
-      );
+      const cmdParams: any = {
+        TableName: this.tableName,
+        Limit: remaining,
+        ExclusiveStartKey,
+        Segment: options?.segment,
+        TotalSegments: options?.totalSegments,
+        ProjectionExpression: projection.ProjectionExpression,
+      };
 
+      if (filterExpr.FilterExpression)
+        cmdParams.FilterExpression = filterExpr.FilterExpression;
+      if (
+        filterExpr.ExpressionAttributeNames ||
+        projection.ExpressionAttributeNames
+      ) {
+        cmdParams.ExpressionAttributeNames = {
+          ...(filterExpr.ExpressionAttributeNames ?? {}),
+          ...(projection.ExpressionAttributeNames ?? {}),
+        };
+      }
+      if (filterExpr.ExpressionAttributeValues)
+        cmdParams.ExpressionAttributeValues =
+          filterExpr.ExpressionAttributeValues;
+
+      const result = await this.sendCommand<ScanCommandOutput>(
+        new ScanCommand(cmdParams),
+      );
       const items =
         result.Items?.map((i) => unmarshall(i) as InferSchema<S>) || [];
       if (options?.onSegmentData) await options.onSegmentData(items);
