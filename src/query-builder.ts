@@ -436,7 +436,9 @@ export class QueryBuilder<S extends Schema<any, any, any, any, any>> {
       KeyConditionExpression,
       FilterExpression,
       ExpressionAttributeNames,
-      ExpressionAttributeValues: marshall(ExpressionAttributeValues),
+      ExpressionAttributeValues: marshall(ExpressionAttributeValues, {
+        removeUndefinedValues: true,
+      }),
       ProjectionExpression,
     };
   }

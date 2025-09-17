@@ -18,7 +18,7 @@ import {
   type TransactGetItemsCommandOutput,
   type UpdateItemCommandOutput,
 } from "@aws-sdk/client-dynamodb";
-import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
+import { marshall as awsMarshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import pThrottle from "p-throttle";
 
 import type { InferSchema, Schema } from "./schema.js";
@@ -157,6 +157,10 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     );
   }
 
+  private marshall(data: object) {
+    return awsMarshall(data, { removeUndefinedValues: true });
+  }
+
   private buildProjectionExpression(attributes?: Array<keyof InferSchema<S>>): {
     ProjectionExpression?: string;
     ExpressionAttributeNames?: Record<string, string>;
@@ -212,7 +216,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return {
       KeyConditionExpression: conditions.join(" AND "),
       ExpressionAttributeNames,
-      ExpressionAttributeValues: marshall(ExpressionAttributeValues),
+      ExpressionAttributeValues: this.marshall(ExpressionAttributeValues),
     };
   }
 
@@ -272,7 +276,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return {
       FilterExpression: FilterExpression.join(" AND "),
       ExpressionAttributeNames,
-      ExpressionAttributeValues: marshall(ExpressionAttributeValues),
+      ExpressionAttributeValues: this.marshall(ExpressionAttributeValues),
     };
   }
 
@@ -330,7 +334,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return {
       UpdateExpression: UpdateExpression.join(" "),
       ExpressionAttributeNames,
-      ExpressionAttributeValues: marshall(ExpressionAttributeValues),
+      ExpressionAttributeValues: this.marshall(ExpressionAttributeValues),
     };
   }
 
@@ -367,7 +371,10 @@ export class Model<S extends Schema<any, any, any, any, any>> {
   async create(item: InferSchema<S>) {
     this.schema.fields.parse(item);
     await this.sendCommand<PutItemCommandOutput>(
-      new PutItemCommand({ TableName: this.tableName, Item: marshall(item) }),
+      new PutItemCommand({
+        TableName: this.tableName,
+        Item: this.marshall(item),
+      }),
     );
   }
 
@@ -379,7 +386,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     await this.sendCommand<PutItemCommandOutput>(
       new PutItemCommand({
         TableName: this.tableName,
-        Item: marshall(item),
+        Item: this.marshall(item),
         ConditionExpression: options?.condition,
       }),
     );
@@ -406,7 +413,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     await this.sendCommand<UpdateItemCommandOutput>(
       new UpdateItemCommand({
         TableName: this.tableName,
-        Key: marshall(key),
+        Key: this.marshall(key),
         UpdateExpression,
         ExpressionAttributeNames,
         ExpressionAttributeValues,
@@ -420,7 +427,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     await this.sendCommand<DeleteItemCommandOutput>(
       new DeleteItemCommand({
         TableName: this.tableName,
-        Key: marshall(key),
+        Key: this.marshall(key),
         ConditionExpression: options?.condition,
       }),
     );
@@ -439,7 +446,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     const result = await this.sendCommand<GetItemCommandOutput>(
       new GetItemCommand({
         TableName: this.tableName,
-        Key: marshall(key),
+        Key: this.marshall(key),
         ProjectionExpression: projection.ProjectionExpression,
         ExpressionAttributeNames: projection.ExpressionAttributeNames,
         ConsistentRead: options?.consistentRead,
@@ -712,7 +719,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
           return {
             Put: {
               TableName: this.tableName,
-              Item: marshall(op.item),
+              Item: this.marshall(op.item),
               ConditionExpression: op.condition,
             },
           };
@@ -728,7 +735,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
           return {
             Update: {
               TableName: this.tableName,
-              Key: marshall(op.key),
+              Key: this.marshall(op.key),
               UpdateExpression,
               ExpressionAttributeNames,
               ExpressionAttributeValues,
@@ -740,7 +747,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
         return {
           Delete: {
             TableName: this.tableName,
-            Key: marshall(op.key),
+            Key: this.marshall(op.key),
             ConditionExpression: op.condition,
           },
         };
@@ -759,7 +766,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
 
     for (const chunkKeys of chunksOf100) {
       const TransactItems = chunkKeys.map((key) => ({
-        Get: { TableName: this.tableName, Key: marshall(key) },
+        Get: { TableName: this.tableName, Key: this.marshall(key) },
       }));
       const res = await this.sendCommand<TransactGetItemsCommandOutput>(
         new TransactGetItemsCommand({ TransactItems }),
@@ -782,10 +789,10 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       let unprocessed = chunkItems.map((op) => {
         if (op.type === "put") {
           this.schema.fields.parse(op.item as InferSchema<S>);
-          return { PutRequest: { Item: marshall(op.item) } };
+          return { PutRequest: { Item: this.marshall(op.item) } };
         } else {
           this.validateKey(op.item);
-          return { DeleteRequest: { Key: marshall(op.item) } };
+          return { DeleteRequest: { Key: this.marshall(op.item) } };
         }
       });
 
@@ -812,7 +819,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     while (remainingKeys.length > 0) {
       const chunkKeys = remainingKeys.slice(0, 100);
       remainingKeys = remainingKeys.slice(100);
-      let unprocessed = chunkKeys.map((k) => marshall(k));
+      let unprocessed = chunkKeys.map((k) => this.marshall(k));
       let attempt = 0;
 
       do {
@@ -866,7 +873,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
         return {
           Update: {
             TableName: this.tableName,
-            Key: marshall(key),
+            Key: this.marshall(key),
             UpdateExpression,
             ExpressionAttributeNames,
             ExpressionAttributeValues,
