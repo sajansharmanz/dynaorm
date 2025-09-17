@@ -37,8 +37,8 @@
     /* --------------------------------------------------
      * Output & Module Resolution
      * -------------------------------------------------- */
-    "module": "nodenext",
-    "moduleResolution": "nodenext",
+    "module": "commonjs",
+    "moduleResolution": "node",
     "rootDir": "src",
     "outDir": "dist",
     "sourceMap": true,
