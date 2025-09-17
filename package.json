@@ -1,6 +1,6 @@
 {
   "name": "dynaorm",
-  "version": "1.0.10",
+  "version": "1.0.9",
   "description": "A type-safe DynamoDB ORM",
   "keywords": [
     "AWS",
@@ -8,7 +8,7 @@
     "ORM",
     "TypeScript"
   ],
-  "type": "commonjs",
+  "type": "module",
   "license": "MIT",
   "author": {
     "name": "Sajan Sharma",
