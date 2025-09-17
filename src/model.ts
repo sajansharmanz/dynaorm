@@ -389,6 +389,8 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       new PutItemCommand({
         TableName: this.tableName,
         Item: this.marshall(item),
+        ConditionExpression: `attribute_not_exists(#pk)`,
+        ExpressionAttributeNames: { "#pk": String(this.partitionKey) },
       }),
     );
   }
@@ -413,25 +415,39 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       [K in keyof InferSchema<S>]: AtomicValue<InferSchema<S>[K]>;
     }>,
     options?: { condition?: string },
-  ): Promise<void> {
+  ) {
     this.validateKey(key);
+
+    const validatedUpdates: Partial<InferSchema<S>> = {};
+    for (const k in updates) {
+      const val = updates[k];
+      validatedUpdates[k] = this.isAtomicOperation(val)
+        ? val
+        : this.schema.fields.shape[k].parse(val);
+    }
+
     const {
       UpdateExpression,
       ExpressionAttributeNames,
       ExpressionAttributeValues,
-    } = this.buildUpdateExpression(updates);
+    } = this.buildUpdateExpression(validatedUpdates);
 
-    if (!UpdateExpression) {
+    if (!UpdateExpression)
       throw new Error("Update must include at least one attribute");
-    }
 
     await this.sendCommand<UpdateItemCommandOutput>(
       new UpdateItemCommand({
         TableName: this.tableName,
         Key: this.marshall(key),
         UpdateExpression,
-        ExpressionAttributeNames,
-        ExpressionAttributeValues,
+        ExpressionAttributeNames: Object.keys(ExpressionAttributeNames || {})
+          .length
+          ? ExpressionAttributeNames
+          : undefined,
+        ExpressionAttributeValues: Object.keys(ExpressionAttributeValues || {})
+          .length
+          ? ExpressionAttributeValues
+          : undefined,
         ConditionExpression: options?.condition,
       }),
     );
@@ -488,52 +504,40 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       attributes?: Array<keyof InferSchema<S>>;
     },
   ): Promise<InferSchema<S>[]> {
-    const keyValues = this.sortKey
-      ? ({
-          [this.partitionKey]: partitionKeyValue,
-          [this.sortKey]: sortKeyCondition?.value,
-        } as Pick<InferSchema<S>, typeof this.partitionKey | S["sortKey"]>)
-      : ({ [this.partitionKey]: partitionKeyValue } as Pick<
-          InferSchema<S>,
-          typeof this.partitionKey
-        >);
+    const keyValues: Record<string, any> = {
+      [this.partitionKey]: partitionKeyValue,
+    };
+    const operators: Partial<Record<string, KeyOperators>> = {};
 
-    const operators: Partial<Record<keyof typeof keyValues, KeyOperators>> = {};
-    if (this.sortKey && sortKeyCondition)
-      operators[this.sortKey] = sortKeyCondition.operator;
+    if (this.sortKey && sortKeyCondition) {
+      keyValues[this.sortKey as string] = sortKeyCondition.value;
+      operators[this.sortKey as string] = sortKeyCondition.operator;
+    }
 
     const projection = this.buildProjectionExpression(options?.attributes);
     const results: InferSchema<S>[] = [];
 
-    const keyCondition = this.buildKeyCondition(keyValues, operators);
-
     for await (const items of this.paginateQuery(
       (ExclusiveStartKey?: Record<string, any>) => {
-        const cmdParams: any = {
+        const keyCond = this.buildKeyCondition(keyValues, operators);
+
+        const mergedNames = {
+          ...(projection.ExpressionAttributeNames ?? {}),
+          ...(keyCond.ExpressionAttributeNames ?? {}),
+        };
+
+        return new QueryCommand({
           TableName: this.tableName,
-          KeyConditionExpression: keyCondition.KeyConditionExpression,
+          KeyConditionExpression: keyCond.KeyConditionExpression,
+          ExpressionAttributeNames: Object.keys(mergedNames).length
+            ? mergedNames
+            : undefined,
+          ExpressionAttributeValues: keyCond.ExpressionAttributeValues,
           ProjectionExpression: projection.ProjectionExpression,
           Limit: options?.limit,
           ExclusiveStartKey,
           ConsistentRead: options?.consistentRead,
-        };
-
-        if (
-          keyCondition.ExpressionAttributeNames ||
-          projection.ExpressionAttributeNames
-        ) {
-          cmdParams.ExpressionAttributeNames = {
-            ...(keyCondition.ExpressionAttributeNames ?? {}),
-            ...(projection.ExpressionAttributeNames ?? {}),
-          };
-        }
-
-        if (keyCondition.ExpressionAttributeValues) {
-          cmdParams.ExpressionAttributeValues =
-            keyCondition.ExpressionAttributeValues;
-        }
-
-        return new QueryCommand(cmdParams);
+        });
       },
     )) {
       results.push(...items);
@@ -558,38 +562,32 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     },
   ): Promise<InferSchema<S>[]> {
     this.getIndex(String(indexName));
+
     const projection = this.buildProjectionExpression(options?.attributes);
     const results: InferSchema<S>[] = [];
-    const keyCondition = this.buildKeyCondition(keyValues, options?.operators);
+
+    const keyCond = this.buildKeyCondition(keyValues, options?.operators);
 
     for await (const items of this.paginateQuery(
       (ExclusiveStartKey?: Record<string, any>) => {
-        const cmdParams: any = {
+        const mergedNames = {
+          ...(projection.ExpressionAttributeNames ?? {}),
+          ...(keyCond.ExpressionAttributeNames ?? {}),
+        };
+
+        return new QueryCommand({
           TableName: this.tableName,
           IndexName: String(indexName),
-          KeyConditionExpression: keyCondition.KeyConditionExpression,
+          KeyConditionExpression: keyCond.KeyConditionExpression,
+          ExpressionAttributeNames: Object.keys(mergedNames).length
+            ? mergedNames
+            : undefined,
+          ExpressionAttributeValues: keyCond.ExpressionAttributeValues,
           ProjectionExpression: projection.ProjectionExpression,
           Limit: options?.limit,
           ExclusiveStartKey,
           ConsistentRead: options?.consistentRead,
-        };
-
-        if (
-          keyCondition.ExpressionAttributeNames ||
-          projection.ExpressionAttributeNames
-        ) {
-          cmdParams.ExpressionAttributeNames = {
-            ...(keyCondition.ExpressionAttributeNames ?? {}),
-            ...(projection.ExpressionAttributeNames ?? {}),
-          };
-        }
-
-        if (keyCondition.ExpressionAttributeValues) {
-          cmdParams.ExpressionAttributeValues =
-            keyCondition.ExpressionAttributeValues;
-        }
-
-        return new QueryCommand(cmdParams);
+        });
       },
     )) {
       results.push(...items);
@@ -607,21 +605,21 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     const items = await this.findByIndex(indexName, keyValues);
     if (!items.length) return;
 
-    const batchOps = items.map((item) => ({
+    const ops = items.map((item) => ({
       key: {
         [this.partitionKey]: item[this.partitionKey],
         ...(this.sortKey ? { [this.sortKey]: item[this.sortKey] } : {}),
       } as Key<S>,
     }));
 
-    if (batchOps.length <= 100) {
+    if (ops.length <= 100) {
       await this.transactWrite(
-        batchOps.map((op) => ({ type: "delete", key: op.key })),
+        ops.map((op) => ({ type: "delete", key: op.key })),
       );
     } else {
       console.warn("deleteByIndex is not atomic for >100 items");
       await this.batchWrite(
-        batchOps.map((op) => ({ type: "delete" as const, item: op.key })),
+        ops.map((op) => ({ type: "delete" as const, item: op.key })),
       );
     }
   }
@@ -911,30 +909,47 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     }>,
   ) {
     if (!items.length) return;
+
     const chunksOf25 = chunk(items, 25);
 
     for (const chunkItems of chunksOf25) {
       const TransactItems = chunkItems.map(({ key, updates }) => {
+        this.validateKey(key);
+
+        const validatedUpdates: Partial<InferSchema<S>> = {};
+        for (const k in updates) {
+          const val = updates[k];
+          validatedUpdates[k] = this.isAtomicOperation(val)
+            ? val
+            : this.schema.fields.shape[k].parse(val);
+        }
+
         const {
           UpdateExpression,
           ExpressionAttributeNames,
           ExpressionAttributeValues,
-        } = this.buildUpdateExpression(updates);
+        } = this.buildUpdateExpression(validatedUpdates);
+
         if (!UpdateExpression)
           throw new Error("Update must include at least one attribute");
 
-        const cmd: any = {
-          TableName: this.tableName,
-          Key: this.marshall(key),
-          UpdateExpression,
+        return {
+          Update: {
+            TableName: this.tableName,
+            Key: this.marshall(key),
+            UpdateExpression,
+            ExpressionAttributeNames: Object.keys(
+              ExpressionAttributeNames || {},
+            ).length
+              ? ExpressionAttributeNames
+              : undefined,
+            ExpressionAttributeValues: Object.keys(
+              ExpressionAttributeValues || {},
+            ).length
+              ? ExpressionAttributeValues
+              : undefined,
+          },
         };
-
-        if (ExpressionAttributeNames)
-          cmd.ExpressionAttributeNames = ExpressionAttributeNames;
-        if (ExpressionAttributeValues)
-          cmd.ExpressionAttributeValues = ExpressionAttributeValues;
-
-        return { Update: cmd };
       });
 
       await this.sendCommand<void>(
