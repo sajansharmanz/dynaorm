@@ -146,6 +146,17 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     };
   }
 
+  private isAtomicOperation<T>(
+    val: AtomicValue<T>,
+  ): val is { __operation: "increment" | "append" | "addSet"; value: any } {
+    return (
+      typeof val === "object" &&
+      val !== null &&
+      "__operation" in val &&
+      "value" in val
+    );
+  }
+
   private buildProjectionExpression(attributes?: Array<keyof InferSchema<S>>): {
     ProjectionExpression?: string;
     ExpressionAttributeNames?: Record<string, string>;
@@ -164,9 +175,9 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     };
   }
 
-  private buildKeyCondition(
-    keyValues: Record<string, any>,
-    operators?: Record<string, KeyOperators>,
+  private buildKeyCondition<K extends keyof InferSchema<S>>(
+    keyValues: Pick<InferSchema<S>, K>,
+    operators?: Partial<Record<K, KeyOperators>>,
   ) {
     const ExpressionAttributeNames: Record<string, string> = {};
     const ExpressionAttributeValues: Record<string, any> = {};
@@ -205,14 +216,11 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     };
   }
 
-  private buildFilterExpression(
-    filter?: Partial<
-      Record<
-        keyof InferSchema<S>,
-        { __operation: FilterOperators; value: any } | any
-      >
-    >,
-  ) {
+  private buildFilterExpression<
+    F extends Partial<Record<keyof InferSchema<S>, any>>,
+  >(filter?: {
+    [K in keyof F]?: { __operation: FilterOperators; value: F[K] } | F[K];
+  }) {
     if (!filter) return {};
 
     const FilterExpression: string[] = [];
@@ -268,7 +276,9 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     };
   }
 
-  private buildUpdateExpression(updates: Record<string, AtomicValue<any>>) {
+  private buildUpdateExpression<U extends Partial<InferSchema<S>>>(updates: {
+    [K in keyof U]?: AtomicValue<U[K]>;
+  }) {
     const setExpressions: string[] = [];
     const addExpressions: string[] = [];
     const ExpressionAttributeNames: Record<string, string> = {};
@@ -283,7 +293,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       const namePlaceholder = getName(k);
       ExpressionAttributeNames[namePlaceholder] = k;
 
-      if (typeof val === "object" && "__operation" in val) {
+      if (this.isAtomicOperation(val)) {
         const vp = `:v${valueCounter++}`;
         ExpressionAttributeValues[vp] = val.value;
 
@@ -442,23 +452,34 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return new QueryBuilder(this);
   }
 
-  async findMany(
+  async findMany<K extends S["sortKey"]>(
     partitionKeyValue: PartitionKeyValue<S>,
-    sortKeyCondition?: { operator: KeyOperators; value: any | [any, any] },
+    sortKeyCondition?: K extends keyof InferSchema<S>
+      ? {
+          operator: KeyOperators;
+          value: InferSchema<S>[K] | [InferSchema<S>[K], InferSchema<S>[K]];
+        }
+      : never,
     options?: {
       limit?: number;
       consistentRead?: boolean;
       attributes?: Array<keyof InferSchema<S>>;
     },
-  ) {
-    const keyValues: Record<string, any> = {
-      [this.partitionKey]: partitionKeyValue,
-    };
-    const operators: Record<string, KeyOperators> = {};
-    if (this.sortKey && sortKeyCondition) {
-      keyValues[this.sortKey] = sortKeyCondition.value;
+  ): Promise<InferSchema<S>[]> {
+    // Build keyValues with proper typing
+    const keyValues = this.sortKey
+      ? ({
+          [this.partitionKey]: partitionKeyValue,
+          [this.sortKey]: sortKeyCondition?.value,
+        } as Pick<InferSchema<S>, typeof this.partitionKey | S["sortKey"]>)
+      : ({ [this.partitionKey]: partitionKeyValue } as Pick<
+          InferSchema<S>,
+          typeof this.partitionKey
+        >);
+
+    const operators: Partial<Record<keyof typeof keyValues, KeyOperators>> = {};
+    if (this.sortKey && sortKeyCondition)
       operators[this.sortKey] = sortKeyCondition.operator;
-    }
 
     const projection = this.buildProjectionExpression(options?.attributes);
     const results: InferSchema<S>[] = [];
@@ -469,7 +490,11 @@ export class Model<S extends Schema<any, any, any, any, any>> {
           TableName: this.tableName,
           ...this.buildKeyCondition(keyValues, operators),
           ProjectionExpression: projection.ProjectionExpression,
-          ExpressionAttributeNames: projection.ExpressionAttributeNames,
+          ExpressionAttributeNames: {
+            ...projection.ExpressionAttributeNames,
+            ...this.buildKeyCondition(keyValues, operators)
+              .ExpressionAttributeNames,
+          },
           Limit: options?.limit,
           ExclusiveStartKey,
           ConsistentRead: options?.consistentRead,
@@ -493,21 +518,27 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       limit?: number;
       consistentRead?: boolean;
       attributes?: Array<keyof InferSchema<S>>;
-      operators?: Record<string, KeyOperators>;
+      operators?: Partial<Record<keyof IndexKey<S, I>, KeyOperators>>;
     },
   ): Promise<InferSchema<S>[]> {
     this.getIndex(String(indexName));
     const projection = this.buildProjectionExpression(options?.attributes);
     const results: InferSchema<S>[] = [];
 
+    const keyCondition = this.buildKeyCondition(keyValues, options?.operators);
+
     for await (const items of this.paginateQuery(
       (ExclusiveStartKey?: Record<string, any>) =>
         new QueryCommand({
           TableName: this.tableName,
           IndexName: String(indexName),
-          ...this.buildKeyCondition(keyValues, options?.operators),
+          KeyConditionExpression: keyCondition.KeyConditionExpression,
+          ExpressionAttributeNames: {
+            ...projection.ExpressionAttributeNames,
+            ...keyCondition.ExpressionAttributeNames,
+          },
+          ExpressionAttributeValues: keyCondition.ExpressionAttributeValues,
           ProjectionExpression: projection.ProjectionExpression,
-          ExpressionAttributeNames: projection.ExpressionAttributeNames,
           Limit: options?.limit,
           ExclusiveStartKey,
           ConsistentRead: options?.consistentRead,
@@ -574,7 +605,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
   async scanAll(options?: {
     filter?: {
       [K in keyof InferSchema<S>]?:
-        | { operator: FilterOperators; value: InferSchema<S>[K] }
+        | { __operation: FilterOperators; value: InferSchema<S>[K] }
         | InferSchema<S>[K];
     };
     limit?: number;
@@ -850,7 +881,14 @@ export class Model<S extends Schema<any, any, any, any, any>> {
 
   async deleteMany(
     partitionKeyValue: PartitionKeyValue<S>,
-    sortKeyCondition?: { operator: KeyOperators; value: any | [any, any] },
+    sortKeyCondition?: S["sortKey"] extends keyof InferSchema<S>
+      ? {
+          operator: KeyOperators;
+          value:
+            | InferSchema<S>[S["sortKey"]]
+            | [InferSchema<S>[S["sortKey"]], InferSchema<S>[S["sortKey"]]];
+        }
+      : never,
   ) {
     const items = await this.findMany(partitionKeyValue, sortKeyCondition);
     if (!items.length) return;

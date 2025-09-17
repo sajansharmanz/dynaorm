@@ -50,21 +50,32 @@ interface FilterCondition<
   join?: "AND" | "OR";
 }
 
-type SortKeyCondition<S extends Schema<any, any, any, any, any>> = {
-  key: NonNullable<S["sortKey"]>;
-  operator: KeyOperators;
-  value:
-    | InferSchema<S>[NonNullable<S["sortKey"]>]
-    | [
-        InferSchema<S>[NonNullable<S["sortKey"]>],
-        InferSchema<S>[NonNullable<S["sortKey"]>],
-      ];
-};
+// type SortKeyCondition<S extends Schema<any, any, any, any, any>> = {
+//   key: NonNullable<S["sortKey"]>;
+//   operator: KeyOperators;
+//   value:
+//     | InferSchema<S>[NonNullable<S["sortKey"]>]
+//     | [
+//         InferSchema<S>[NonNullable<S["sortKey"]>],
+//         InferSchema<S>[NonNullable<S["sortKey"]>],
+//       ];
+// };
 
 export class QueryBuilder<S extends Schema<any, any, any, any, any>> {
   private model: Model<S>;
   private partitionKeyCondition?: KeyCondition<S, S["partitionKey"]>;
-  private sortKeyCondition?: SortKeyCondition<S>;
+  private sortKeyCondition?: S["sortKey"] extends keyof InferSchema<S>
+    ? {
+        key: NonNullable<S["sortKey"]>;
+        operator: KeyOperators;
+        value:
+          | InferSchema<S>[NonNullable<S["sortKey"]>]
+          | [
+              InferSchema<S>[NonNullable<S["sortKey"]>],
+              InferSchema<S>[NonNullable<S["sortKey"]>],
+            ];
+      }
+    : never;
   private filterConditions: FilterCondition<S, keyof InferSchema<S>>[] = [];
   private limitCount?: number;
   private scanIndexForward?: boolean;
@@ -119,26 +130,45 @@ export class QueryBuilder<S extends Schema<any, any, any, any, any>> {
     operator: "begins_with",
     value: InferSchema<S>[NonNullable<S["sortKey"]>],
   ): this;
-  whereSK(operator: KeyOperators, value: any): this {
-    if (!this.model.schema.sortKey) {
+  whereSK(
+    operator: KeyOperators,
+    value:
+      | InferSchema<S>[NonNullable<S["sortKey"]>]
+      | [
+          InferSchema<S>[NonNullable<S["sortKey"]>],
+          InferSchema<S>[NonNullable<S["sortKey"]>],
+        ],
+  ): this {
+    const sortKey = this.model.schema.sortKey!;
+    if (!sortKey) {
       throw new Error("Table has no sort key to query on.");
     }
 
-    if (
-      operator === "BETWEEN" &&
-      (!Array.isArray(value) || value.length !== 2)
-    ) {
-      throw new Error("BETWEEN operator requires an array of two values.");
-    }
-    if (operator === "begins_with" && Array.isArray(value)) {
-      throw new Error("begins_with operator requires a single value.");
+    if (operator === "BETWEEN") {
+      if (!Array.isArray(value) || value.length !== 2) {
+        throw new Error("BETWEEN operator requires an array of two values.");
+      }
+    } else if (operator === "begins_with") {
+      if (Array.isArray(value)) {
+        throw new Error("begins_with operator requires a single value.");
+      }
+    } else {
+      if (Array.isArray(value)) {
+        throw new Error(`${operator} operator cannot use an array`);
+      }
     }
 
     this.sortKeyCondition = {
-      key: this.model.schema.sortKey,
+      key: sortKey,
       operator,
       value,
-    };
+    } as S["sortKey"] extends keyof InferSchema<S>
+      ? {
+          key: NonNullable<S["sortKey"]>;
+          operator: KeyOperators;
+          value: typeof value;
+        }
+      : never;
     return this;
   }
 
@@ -169,7 +199,11 @@ export class QueryBuilder<S extends Schema<any, any, any, any, any>> {
     value?: InferSchema<S>[K] | InferSchema<S>[K][],
     join: "AND" | "OR" = "AND",
   ): this {
-    if (value === undefined) {
+    if (
+      operator !== "attribute_exists" &&
+      operator !== "attribute_not_exists" &&
+      value === undefined
+    ) {
       throw new Error(
         `Filter value for key "${String(key)}" cannot be undefined.`,
       );
@@ -333,7 +367,9 @@ export class QueryBuilder<S extends Schema<any, any, any, any, any>> {
         const v = getValue(f.value);
         expr = `${f.operator}(${name}, ${v})`;
       } else if (f.operator === "IN") {
-        const values = (f.value as any[]).map((v) => getValue(v));
+        const values = (f.value as InferSchema<S>[typeof f.key][]).map((v) =>
+          getValue(v),
+        );
         expr = `${name} IN (${values.join(", ")})`;
       } else {
         const v = getValue(f.value);
@@ -419,7 +455,7 @@ export class QueryBuilder<S extends Schema<any, any, any, any, any>> {
 
     const command = new QueryCommand({
       TableName: this.model.tableName,
-      IndexName: this.indexName as string,
+      IndexName: this.indexName ? String(this.indexName) : undefined,
       KeyConditionExpression,
       FilterExpression,
       ExpressionAttributeNames,
