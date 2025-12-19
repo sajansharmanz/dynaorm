@@ -455,35 +455,54 @@ export class QueryBuilder<S extends Schema<any, any, any, any, any>> {
       ProjectionExpression,
     } = this.buildExpression();
 
-    const command = new QueryCommand({
-      TableName: this.model.tableName,
-      IndexName: this.indexName ? String(this.indexName) : undefined,
-      KeyConditionExpression,
-      FilterExpression,
-      ExpressionAttributeNames,
-      ExpressionAttributeValues,
-      ProjectionExpression,
-      Limit: this.limitCount,
-      ScanIndexForward: this.scanIndexForward,
-      ExclusiveStartKey: this.ExclusiveStartKey,
-      ConsistentRead: this.consistent,
-    });
+    const accumulatedItems: InferSchema<S>[] = [];
+    let currentStartKey = this.ExclusiveStartKey;
 
-    const result = await this.model.sendCommand<QueryCommandOutput>(command);
+    do {
+      const remainingToFetch = this.limitCount
+        ? Math.max(0, this.limitCount - accumulatedItems.length)
+        : undefined;
+
+      const command = new QueryCommand({
+        TableName: this.model.tableName,
+        IndexName: this.indexName ? String(this.indexName) : undefined,
+        KeyConditionExpression,
+        FilterExpression,
+        ExpressionAttributeNames,
+        ExpressionAttributeValues,
+        ProjectionExpression,
+        Limit: remainingToFetch,
+        ScanIndexForward: this.scanIndexForward,
+        ExclusiveStartKey: currentStartKey,
+        ConsistentRead: this.consistent,
+      });
+
+      const result = await this.model.sendCommand<QueryCommandOutput>(command);
+      const pageItems =
+        result.Items?.map((i) => unmarshall(i) as InferSchema<S>) || [];
+
+      accumulatedItems.push(...pageItems);
+      currentStartKey = result.LastEvaluatedKey;
+    } while (
+      (!this.limitCount || accumulatedItems.length < this.limitCount) &&
+      currentStartKey
+    );
+
     return {
-      items: result.Items?.map((i) => unmarshall(i) as InferSchema<S>) || [],
-      lastKey: result.LastEvaluatedKey,
+      items: accumulatedItems,
+      lastKey: currentStartKey,
     };
   }
 
   async *paginate(): AsyncGenerator<InferSchema<S>[], void, unknown> {
     let nextKey = this.ExclusiveStartKey;
-    const queryBuilder = this.clone();
 
     do {
+      const queryBuilder = this.clone();
       if (nextKey) {
         queryBuilder.startKey(nextKey);
       }
+
       const { items, lastKey } = await queryBuilder.exec();
       if (items.length > 0) {
         yield items;

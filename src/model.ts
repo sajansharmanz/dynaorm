@@ -384,11 +384,11 @@ export class Model<S extends Schema<any, any, any, any, any>> {
   }
 
   async create(item: InferSchema<S>) {
-    this.schema.fields.parse(item);
+    const parsed = this.schema.fields.parse(item);
     await this.sendCommand<PutItemCommandOutput>(
       new PutItemCommand({
         TableName: this.tableName,
-        Item: this.marshall(item),
+        Item: this.marshall(parsed),
         ConditionExpression: `attribute_not_exists(#pk)`,
         ExpressionAttributeNames: { "#pk": String(this.partitionKey) },
       }),
@@ -399,11 +399,11 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     item: InferSchema<S>,
     options?: { condition?: string },
   ): Promise<void> {
-    this.schema.fields.parse(item);
+    const parsed = this.schema.fields.parse(item);
     await this.sendCommand<PutItemCommandOutput>(
       new PutItemCommand({
         TableName: this.tableName,
-        Item: this.marshall(item),
+        Item: this.marshall(parsed),
         ConditionExpression: options?.condition,
       }),
     );
@@ -534,7 +534,9 @@ export class Model<S extends Schema<any, any, any, any, any>> {
             : undefined,
           ExpressionAttributeValues: keyCond.ExpressionAttributeValues,
           ProjectionExpression: projection.ProjectionExpression,
-          Limit: options?.limit,
+          ...(options?.limit !== undefined && Number.isFinite(options.limit)
+            ? { Limit: options.limit }
+            : {}),
           ExclusiveStartKey,
           ConsistentRead: options?.consistentRead,
         });
@@ -584,7 +586,9 @@ export class Model<S extends Schema<any, any, any, any, any>> {
             : undefined,
           ExpressionAttributeValues: keyCond.ExpressionAttributeValues,
           ProjectionExpression: projection.ProjectionExpression,
-          Limit: options?.limit,
+          ...(options?.limit !== undefined && Number.isFinite(options.limit)
+            ? { Limit: options.limit }
+            : {}),
           ExclusiveStartKey,
           ConsistentRead: options?.consistentRead,
         });
@@ -681,11 +685,11 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     do {
       const cmdParams: any = {
         TableName: this.tableName,
-        Limit: remaining,
         ExclusiveStartKey,
         Segment: options?.segment,
         TotalSegments: options?.totalSegments,
         ProjectionExpression: projection.ProjectionExpression,
+        ...(Number.isFinite(remaining) ? { Limit: remaining } : {}),
       };
 
       if (filterExpr.FilterExpression)
@@ -711,8 +715,11 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       if (options?.onSegmentData) await options.onSegmentData(items);
       results.push(...items);
       ExclusiveStartKey = result.LastEvaluatedKey;
-      remaining -= items.length;
-    } while (ExclusiveStartKey && remaining > 0);
+
+      if (Number.isFinite(remaining)) {
+        remaining -= items.length;
+      }
+    } while (ExclusiveStartKey && (remaining === Infinity || remaining > 0));
 
     return { items: results, lastKey: ExclusiveStartKey ?? null };
   }
@@ -764,11 +771,11 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     for (const chunkItems of chunksOf100) {
       const TransactItems = chunkItems.map((op) => {
         if (op.type === "put") {
-          this.schema.fields.parse(op.item);
+          const parsed = this.schema.fields.parse(op.item);
           return {
             Put: {
               TableName: this.tableName,
-              Item: this.marshall(op.item),
+              Item: this.marshall(parsed),
               ConditionExpression: op.condition,
             },
           };
@@ -837,8 +844,8 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     for (const chunkItems of chunksOf25) {
       let unprocessed = chunkItems.map((op) => {
         if (op.type === "put") {
-          this.schema.fields.parse(op.item as InferSchema<S>);
-          return { PutRequest: { Item: this.marshall(op.item) } };
+          const parsed = this.schema.fields.parse(op.item as InferSchema<S>);
+          return { PutRequest: { Item: this.marshall(parsed) } };
         } else {
           this.validateKey(op.item);
           return { DeleteRequest: { Key: this.marshall(op.item) } };

@@ -1,6 +1,6 @@
 {
   "name": "dynaorm",
-  "version": "1.0.17",
+  "version": "1.0.18",
   "description": "A type-safe DynamoDB ORM",
   "keywords": [
     "AWS",
@@ -42,21 +42,21 @@
     "coverage": "vitest run --coverage --watch=false"
   },
   "devDependencies": {
-    "@eslint/js": "^9.35.0",
+    "@eslint/js": "^9.39.2",
     "@ianvs/prettier-plugin-sort-imports": "^4.7.0",
-    "@types/node": "^24.3.1",
-    "eslint": "^9.35.0",
+    "@types/node": "^25.0.3",
+    "eslint": "^9.39.2",
     "eslint-config-prettier": "^10.1.8",
-    "globals": "^16.4.0",
-    "prettier": "^3.6.2",
-    "typescript": "^5.9.2",
-    "typescript-eslint": "^8.43.0",
-    "vitest": "^3.2.4"
+    "globals": "^16.5.0",
+    "prettier": "^3.7.4",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.50.0",
+    "vitest": "^4.0.16"
   },
   "peerDependencies": {
-    "@aws-sdk/client-dynamodb": ">=3.886.0",
-    "@aws-sdk/util-dynamodb": ">=3.886.0",
-    "p-throttle": ">=8.0.0",
-    "zod": ">=4.1.5"
+    "@aws-sdk/client-dynamodb": ">=3.955.0",
+    "@aws-sdk/util-dynamodb": ">=3.955.0",
+    "p-throttle": ">=8.1.0",
+    "zod": ">=4.2.1"
   }
 }
