@@ -14,8 +14,8 @@ export type Projection<T extends z.ZodRawShape> =
 // Index Types
 // --------------------
 export interface GlobalSecondaryIndex<T extends z.ZodRawShape> {
-  partitionKey: Keys<T>;
-  sortKey?: Keys<T>;
+  partitionKey: Keys<T> | [Keys<T>, Keys<T>?, Keys<T>?, Keys<T>?];
+  sortKey?: Keys<T> | [Keys<T>, Keys<T>?, Keys<T>?, Keys<T>?];
   projection?: Projection<T>;
 }
 
@@ -74,11 +74,13 @@ export function defineSchema<
   globalSecondaryIndexes?: GSI;
   localSecondaryIndexes?: LSI;
 }): Schema<T, PK, SK, GSI, LSI> {
-  const gsiNames = Object.keys(schema.globalSecondaryIndexes ?? {});
+  const gsiEntries = Object.entries(schema.globalSecondaryIndexes ?? {});
   const lsiNames = Object.keys(schema.localSecondaryIndexes ?? {});
 
-  // Ensure no duplicate index names between GSIs and LSIs
-  const duplicates = gsiNames.filter((name) => lsiNames.includes(name));
+  const duplicates = gsiEntries
+    .map(([name]) => name)
+    .filter((name) => lsiNames.includes(name));
+
   if (duplicates.length) {
     throw new Error(
       `Index names must be unique across GSIs and LSIs. Duplicates: ${duplicates.join(
@@ -93,6 +95,15 @@ export function defineSchema<
     String(schema.sortKey) === String(schema.partitionKey)
   ) {
     throw new Error("Table sortKey cannot be the same as partitionKey");
+  }
+
+  for (const [name, index] of gsiEntries) {
+    if (Array.isArray(index.partitionKey) && index.partitionKey.length > 4) {
+      throw new Error(`GSI "${name}" partitionKey cannot exceed 4 attributes.`);
+    }
+    if (Array.isArray(index.sortKey) && index.sortKey.length > 4) {
+      throw new Error(`GSI "${name}" sortKey cannot exceed 4 attributes.`);
+    }
   }
 
   return {

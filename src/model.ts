@@ -35,37 +35,25 @@ export type PartitionKeyValue<S extends Schema<any, any, any, any, any>> =
     ? InferSchema<S>[S["partitionKey"]]
     : never;
 
+type ExtractKeys<T> = T extends any[] ? T[number] : T;
+
 type IndexKey<
   S extends Schema<any, any, any, any, any>,
   I extends
     | keyof S["globalSecondaryIndexes"]
     | keyof S["localSecondaryIndexes"],
 > = I extends keyof S["globalSecondaryIndexes"]
-  ? S["globalSecondaryIndexes"][I] extends {
-      partitionKey: keyof InferSchema<S>;
-      sortKey?: keyof InferSchema<S>;
-    }
-    ? S["globalSecondaryIndexes"][I]["sortKey"] extends keyof InferSchema<S>
-      ? Pick<
-          InferSchema<S>,
-          | S["globalSecondaryIndexes"][I]["partitionKey"]
-          | S["globalSecondaryIndexes"][I]["sortKey"]
-        >
-      : Pick<InferSchema<S>, S["globalSecondaryIndexes"][I]["partitionKey"]>
-    : never
+  ? Pick<
+      InferSchema<S>,
+      | ExtractKeys<S["globalSecondaryIndexes"][I]["partitionKey"]>
+      | ExtractKeys<S["globalSecondaryIndexes"][I]["sortKey"]>
+    >
   : I extends keyof S["localSecondaryIndexes"]
-    ? S["localSecondaryIndexes"][I] extends {
-        partitionKey: keyof InferSchema<S>;
-        sortKey?: keyof InferSchema<S>;
-      }
-      ? S["localSecondaryIndexes"][I]["sortKey"] extends keyof InferSchema<S>
-        ? Pick<
-            InferSchema<S>,
-            | S["localSecondaryIndexes"][I]["partitionKey"]
-            | S["localSecondaryIndexes"][I]["sortKey"]
-          >
-        : Pick<InferSchema<S>, S["localSecondaryIndexes"][I]["partitionKey"]>
-      : never
+    ? Pick<
+        InferSchema<S>,
+        | S["partitionKey"] // LSIs always share the table partition key
+        | ExtractKeys<S["localSecondaryIndexes"][I]["sortKey"]>
+      >
     : never;
 
 export interface ModelOptions {
@@ -176,9 +164,9 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     };
   }
 
-  private buildKeyCondition<K extends keyof InferSchema<S>>(
-    keyValues: Pick<InferSchema<S>, K>,
-    operators?: Partial<Record<K, KeyOperators>>,
+  private buildKeyCondition(
+    keyValues: Record<string, any>,
+    operators?: Partial<Record<string, KeyOperators>>,
   ) {
     const ExpressionAttributeNames: Record<string, string> = {};
     const ExpressionAttributeValues: Record<string, any> = {};
@@ -188,26 +176,26 @@ export class Model<S extends Schema<any, any, any, any, any>> {
 
     for (const k in keyValues) {
       const val = keyValues[k];
+      if (val === undefined) continue;
+
       const op = operators?.[k] || "=";
       const namePlaceholder = getName(k);
+      const vp = `:v${valueCounter++}`;
+
+      ExpressionAttributeNames[namePlaceholder] = k;
 
       if (op === "BETWEEN" && Array.isArray(val) && val.length === 2) {
-        const vp1 = `:v${valueCounter++}`;
         const vp2 = `:v${valueCounter++}`;
-        ExpressionAttributeValues[vp1] = awsMarshall({ v: val[0] }).v;
+        ExpressionAttributeValues[vp] = awsMarshall({ v: val[0] }).v;
         ExpressionAttributeValues[vp2] = awsMarshall({ v: val[1] }).v;
-        conditions.push(`${namePlaceholder} BETWEEN ${vp1} AND ${vp2}`);
+        conditions.push(`${namePlaceholder} BETWEEN ${vp} AND ${vp2}`);
       } else if (op === "begins_with") {
-        const vp = `:v${valueCounter++}`;
         ExpressionAttributeValues[vp] = awsMarshall({ v: val }).v;
         conditions.push(`begins_with(${namePlaceholder}, ${vp})`);
       } else {
-        const vp = `:v${valueCounter++}`;
         ExpressionAttributeValues[vp] = awsMarshall({ v: val }).v;
         conditions.push(`${namePlaceholder} ${op} ${vp}`);
       }
-
-      ExpressionAttributeNames[namePlaceholder] = k;
     }
 
     return {
@@ -353,22 +341,6 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     };
   }
 
-  private async parallelScan(
-    parallelism: number,
-    options: Omit<Parameters<Model<S>["scanAll"]>[0], "parallelism">,
-  ) {
-    const scans = Array.from({ length: parallelism }, (_, segment) =>
-      this.scanAll({
-        ...options,
-        startKey: undefined,
-        segment,
-        totalSegments: parallelism,
-      }),
-    );
-    const allResults = await Promise.all(scans);
-    return { items: allResults.flatMap((r) => r.items), lastKey: null };
-  }
-
   private async *paginateQuery(
     commandFactory: (exclusiveStartKey?: Record<string, any>) => any,
   ): AsyncGenerator<any, void, unknown> {
@@ -395,18 +367,147 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     );
   }
 
-  async upsert(
-    item: InferSchema<S>,
-    options?: { condition?: string },
-  ): Promise<void> {
-    const parsed = this.schema.fields.parse(item);
-    await this.sendCommand<PutItemCommandOutput>(
-      new PutItemCommand({
+  async findOne(
+    key: Key<S>,
+    options?: {
+      attributes?: Array<keyof InferSchema<S>>;
+      consistentRead?: boolean;
+    },
+  ) {
+    this.validateKey(key);
+    const projection = this.buildProjectionExpression(options?.attributes);
+
+    const result = await this.sendCommand<GetItemCommandOutput>(
+      new GetItemCommand({
         TableName: this.tableName,
-        Item: this.marshall(parsed),
-        ConditionExpression: options?.condition,
+        Key: this.marshall(key),
+        ProjectionExpression: projection.ProjectionExpression,
+        ExpressionAttributeNames: projection.ExpressionAttributeNames,
+        ConsistentRead: options?.consistentRead,
       }),
     );
+    return result.Item ? (unmarshall(result.Item) as InferSchema<S>) : null;
+  }
+
+  async findMany<K extends keyof InferSchema<S>>(
+    partitionKeyValue: PartitionKeyValue<S>,
+    sortKeyCondition?: K extends keyof InferSchema<S>
+      ? {
+          operator: KeyOperators;
+          value: InferSchema<S>[K] | [InferSchema<S>[K], InferSchema<S>[K]];
+        }
+      : never,
+    options?: {
+      limit?: number;
+      consistentRead?: boolean;
+      attributes?: Array<keyof InferSchema<S>>;
+    },
+  ): Promise<InferSchema<S>[]> {
+    const keyValues: Record<string, any> = {
+      [this.partitionKey as string]: partitionKeyValue,
+    };
+    const operators: Partial<Record<string, KeyOperators>> = {};
+
+    if (this.sortKey && sortKeyCondition) {
+      keyValues[this.sortKey as string] = sortKeyCondition.value;
+      operators[this.sortKey as string] = sortKeyCondition.operator;
+    }
+
+    const projection = this.buildProjectionExpression(options?.attributes);
+    const results: InferSchema<S>[] = [];
+
+    for await (const items of this.paginateQuery(
+      (ExclusiveStartKey?: Record<string, any>) => {
+        const keyCond = this.buildKeyCondition(keyValues, operators);
+        const mergedNames = {
+          ...(projection.ExpressionAttributeNames ?? {}),
+          ...(keyCond.ExpressionAttributeNames ?? {}),
+        };
+
+        return new QueryCommand({
+          TableName: this.tableName,
+          KeyConditionExpression: keyCond.KeyConditionExpression,
+          ExpressionAttributeNames: Object.keys(mergedNames).length
+            ? mergedNames
+            : undefined,
+          ExpressionAttributeValues: keyCond.ExpressionAttributeValues,
+          ProjectionExpression: projection.ProjectionExpression,
+          ...(options?.limit !== undefined && Number.isFinite(options.limit)
+            ? { Limit: options.limit }
+            : {}),
+          ExclusiveStartKey,
+          ConsistentRead: options?.consistentRead,
+        });
+      },
+    )) {
+      results.push(...items);
+      if (options?.limit && results.length >= options.limit) break;
+    }
+    return options?.limit ? results.slice(0, options.limit) : results;
+  }
+
+  async findByIndex<
+    I extends
+      | keyof S["globalSecondaryIndexes"]
+      | keyof S["localSecondaryIndexes"],
+  >(
+    indexName: I,
+    keyValues: IndexKey<S, I>,
+    options?: {
+      limit?: number;
+      consistentRead?: boolean;
+      attributes?: Array<keyof InferSchema<S>>;
+      operators?: Partial<Record<keyof IndexKey<S, I>, KeyOperators>>;
+    },
+  ): Promise<InferSchema<S>[]> {
+    const index = this.getIndex(String(indexName));
+
+    const pks = Array.isArray(index.partitionKey)
+      ? index.partitionKey
+      : [index.partitionKey];
+    for (const pk of pks) {
+      if (!(pk in (keyValues as any))) {
+        throw new Error(
+          `Attribute ${String(pk)} is a required partition key for index ${String(indexName)}`,
+        );
+      }
+    }
+
+    const projection = this.buildProjectionExpression(options?.attributes);
+    const results: InferSchema<S>[] = [];
+    const keyCond = this.buildKeyCondition(
+      keyValues as Record<string, any>,
+      options?.operators as any,
+    );
+
+    for await (const items of this.paginateQuery(
+      (ExclusiveStartKey?: Record<string, any>) => {
+        const mergedNames = {
+          ...(projection.ExpressionAttributeNames ?? {}),
+          ...(keyCond.ExpressionAttributeNames ?? {}),
+        };
+
+        return new QueryCommand({
+          TableName: this.tableName,
+          IndexName: String(indexName),
+          KeyConditionExpression: keyCond.KeyConditionExpression,
+          ExpressionAttributeNames: Object.keys(mergedNames).length
+            ? mergedNames
+            : undefined,
+          ExpressionAttributeValues: keyCond.ExpressionAttributeValues,
+          ProjectionExpression: projection.ProjectionExpression,
+          ...(options?.limit !== undefined && Number.isFinite(options.limit)
+            ? { Limit: options.limit }
+            : {}),
+          ExclusiveStartKey,
+          ConsistentRead: options?.consistentRead,
+        });
+      },
+    )) {
+      results.push(...items);
+      if (options?.limit && results.length >= options.limit) break;
+    }
+    return options?.limit ? results.slice(0, options.limit) : results;
   }
 
   async update(
@@ -417,7 +518,6 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     options?: { condition?: string },
   ) {
     this.validateKey(key);
-
     const validatedUpdates: Partial<InferSchema<S>> = {};
     for (const k in updates) {
       const val = updates[k];
@@ -431,7 +531,6 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       ExpressionAttributeNames,
       ExpressionAttributeValues,
     } = this.buildUpdateExpression(validatedUpdates);
-
     if (!UpdateExpression)
       throw new Error("Update must include at least one attribute");
 
@@ -462,195 +561,6 @@ export class Model<S extends Schema<any, any, any, any, any>> {
         ConditionExpression: options?.condition,
       }),
     );
-  }
-
-  async findOne(
-    key: Key<S>,
-    options?: {
-      attributes?: Array<keyof InferSchema<S>>;
-      consistentRead?: boolean;
-    },
-  ) {
-    this.validateKey(key);
-    const projection = this.buildProjectionExpression(options?.attributes);
-
-    const result = await this.sendCommand<GetItemCommandOutput>(
-      new GetItemCommand({
-        TableName: this.tableName,
-        Key: this.marshall(key),
-        ProjectionExpression: projection.ProjectionExpression,
-        ExpressionAttributeNames: projection.ExpressionAttributeNames,
-        ConsistentRead: options?.consistentRead,
-      }),
-    );
-    return result.Item ? (unmarshall(result.Item) as InferSchema<S>) : null;
-  }
-
-  query(): QueryBuilder<S> {
-    return new QueryBuilder(this);
-  }
-
-  async findMany<K extends keyof InferSchema<S>>(
-    partitionKeyValue: PartitionKeyValue<S>,
-    sortKeyCondition?: K extends keyof InferSchema<S>
-      ? {
-          operator: KeyOperators;
-          value: InferSchema<S>[K] | [InferSchema<S>[K], InferSchema<S>[K]];
-        }
-      : never,
-    options?: {
-      limit?: number;
-      consistentRead?: boolean;
-      attributes?: Array<keyof InferSchema<S>>;
-    },
-  ): Promise<InferSchema<S>[]> {
-    const keyValues: Record<string, any> = {
-      [this.partitionKey]: partitionKeyValue,
-    };
-    const operators: Partial<Record<string, KeyOperators>> = {};
-
-    if (this.sortKey && sortKeyCondition) {
-      keyValues[this.sortKey as string] = sortKeyCondition.value;
-      operators[this.sortKey as string] = sortKeyCondition.operator;
-    }
-
-    const projection = this.buildProjectionExpression(options?.attributes);
-    const results: InferSchema<S>[] = [];
-
-    for await (const items of this.paginateQuery(
-      (ExclusiveStartKey?: Record<string, any>) => {
-        const keyCond = this.buildKeyCondition(keyValues, operators);
-
-        const mergedNames = {
-          ...(projection.ExpressionAttributeNames ?? {}),
-          ...(keyCond.ExpressionAttributeNames ?? {}),
-        };
-
-        return new QueryCommand({
-          TableName: this.tableName,
-          KeyConditionExpression: keyCond.KeyConditionExpression,
-          ExpressionAttributeNames: Object.keys(mergedNames).length
-            ? mergedNames
-            : undefined,
-          ExpressionAttributeValues: keyCond.ExpressionAttributeValues,
-          ProjectionExpression: projection.ProjectionExpression,
-          ...(options?.limit !== undefined && Number.isFinite(options.limit)
-            ? { Limit: options.limit }
-            : {}),
-          ExclusiveStartKey,
-          ConsistentRead: options?.consistentRead,
-        });
-      },
-    )) {
-      results.push(...items);
-      if (options?.limit && results.length >= options.limit) break;
-    }
-
-    return options?.limit ? results.slice(0, options.limit) : results;
-  }
-
-  async findByIndex<
-    I extends
-      | keyof S["globalSecondaryIndexes"]
-      | keyof S["localSecondaryIndexes"],
-  >(
-    indexName: I,
-    keyValues: IndexKey<S, I>,
-    options?: {
-      limit?: number;
-      consistentRead?: boolean;
-      attributes?: Array<keyof InferSchema<S>>;
-      operators?: Partial<Record<keyof IndexKey<S, I>, KeyOperators>>;
-    },
-  ): Promise<InferSchema<S>[]> {
-    this.getIndex(String(indexName));
-
-    const projection = this.buildProjectionExpression(options?.attributes);
-    const results: InferSchema<S>[] = [];
-
-    const keyCond = this.buildKeyCondition(keyValues, options?.operators);
-
-    for await (const items of this.paginateQuery(
-      (ExclusiveStartKey?: Record<string, any>) => {
-        const mergedNames = {
-          ...(projection.ExpressionAttributeNames ?? {}),
-          ...(keyCond.ExpressionAttributeNames ?? {}),
-        };
-
-        return new QueryCommand({
-          TableName: this.tableName,
-          IndexName: String(indexName),
-          KeyConditionExpression: keyCond.KeyConditionExpression,
-          ExpressionAttributeNames: Object.keys(mergedNames).length
-            ? mergedNames
-            : undefined,
-          ExpressionAttributeValues: keyCond.ExpressionAttributeValues,
-          ProjectionExpression: projection.ProjectionExpression,
-          ...(options?.limit !== undefined && Number.isFinite(options.limit)
-            ? { Limit: options.limit }
-            : {}),
-          ExclusiveStartKey,
-          ConsistentRead: options?.consistentRead,
-        });
-      },
-    )) {
-      results.push(...items);
-      if (options?.limit && results.length >= options.limit) break;
-    }
-
-    return options?.limit ? results.slice(0, options.limit) : results;
-  }
-
-  async deleteByIndex<
-    I extends
-      | keyof S["globalSecondaryIndexes"]
-      | keyof S["localSecondaryIndexes"],
-  >(indexName: I, keyValues: IndexKey<S, I>) {
-    const items = await this.findByIndex(indexName, keyValues);
-    if (!items.length) return;
-
-    const ops = items.map((item) => ({
-      key: {
-        [this.partitionKey]: item[this.partitionKey],
-        ...(this.sortKey ? { [this.sortKey]: item[this.sortKey] } : {}),
-      } as Key<S>,
-    }));
-
-    if (ops.length <= 100) {
-      await this.transactWrite(
-        ops.map((op) => ({ type: "delete", key: op.key })),
-      );
-    } else {
-      console.warn("deleteByIndex is not atomic for >100 items");
-      await this.batchWrite(
-        ops.map((op) => ({ type: "delete" as const, item: op.key })),
-      );
-    }
-  }
-
-  async updateByIndex<
-    I extends
-      | keyof S["globalSecondaryIndexes"]
-      | keyof S["localSecondaryIndexes"],
-  >(
-    indexName: I,
-    keyValues: IndexKey<S, I>,
-    updates: Partial<{
-      [K in keyof InferSchema<S>]: AtomicValue<InferSchema<S>[K]>;
-    }>,
-  ) {
-    const items = await this.findByIndex(indexName, keyValues);
-    if (!items.length) return;
-
-    const updateOps = items.map((item) => ({
-      key: {
-        [this.partitionKey]: item[this.partitionKey],
-        ...(this.sortKey ? { [this.sortKey]: item[this.sortKey] } : {}),
-      } as Key<S>,
-      updates,
-    }));
-
-    await this.updateMany(updateOps);
   }
 
   async scanAll(options?: {
@@ -694,6 +604,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
 
       if (filterExpr.FilterExpression)
         cmdParams.FilterExpression = filterExpr.FilterExpression;
+
       if (
         filterExpr.ExpressionAttributeNames ||
         projection.ExpressionAttributeNames
@@ -703,6 +614,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
           ...(projection.ExpressionAttributeNames ?? {}),
         };
       }
+
       if (filterExpr.ExpressionAttributeValues)
         cmdParams.ExpressionAttributeValues =
           filterExpr.ExpressionAttributeValues;
@@ -712,6 +624,7 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       );
       const items =
         result.Items?.map((i) => unmarshall(i) as InferSchema<S>) || [];
+
       if (options?.onSegmentData) await options.onSegmentData(items);
       results.push(...items);
       ExclusiveStartKey = result.LastEvaluatedKey;
@@ -753,74 +666,13 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     return result.Count ?? 0;
   }
 
-  async transactWrite(
-    items: Array<
-      | { type: "put"; item: InferSchema<S>; condition?: string }
-      | {
-          type: "update";
-          key: Key<S>;
-          updates: Record<string, AtomicValue<any>>;
-          condition?: string;
-        }
-      | { type: "delete"; key: Key<S>; condition?: string }
-    >,
-  ) {
-    if (!items.length) return;
-    const chunksOf100 = chunk(items, 100);
-
-    for (const chunkItems of chunksOf100) {
-      const TransactItems = chunkItems.map((op) => {
-        if (op.type === "put") {
-          const parsed = this.schema.fields.parse(op.item);
-          return {
-            Put: {
-              TableName: this.tableName,
-              Item: this.marshall(parsed),
-              ConditionExpression: op.condition,
-            },
-          };
-        }
-        if (op.type === "update") {
-          const {
-            UpdateExpression,
-            ExpressionAttributeNames,
-            ExpressionAttributeValues,
-          } = this.buildUpdateExpression(op.updates);
-          if (!UpdateExpression)
-            throw new Error("Update must include at least one attribute");
-          return {
-            Update: {
-              TableName: this.tableName,
-              Key: this.marshall(op.key),
-              UpdateExpression,
-              ExpressionAttributeNames,
-              ExpressionAttributeValues,
-              ConditionExpression: op.condition,
-            },
-          };
-        }
-        this.validateKey(op.key);
-        return {
-          Delete: {
-            TableName: this.tableName,
-            Key: this.marshall(op.key),
-            ConditionExpression: op.condition,
-          },
-        };
-      });
-      await this.sendCommand<void>(
-        new TransactWriteItemsCommand({ TransactItems }),
-      );
-    }
-  }
-
   async transactGet(keys: Key<S>[]): Promise<InferSchema<S>[]> {
     if (!keys.length) return [];
     keys.forEach((k) => this.validateKey(k));
-    const chunksOf100 = chunk(keys, 100);
+    const chunks = chunk(keys, 100);
     const results: InferSchema<S>[] = [];
 
-    for (const chunkKeys of chunksOf100) {
+    for (const chunkKeys of chunks) {
       const TransactItems = chunkKeys.map((key) => ({
         Get: { TableName: this.tableName, Key: this.marshall(key) },
       }));
@@ -834,36 +686,6 @@ export class Model<S extends Schema<any, any, any, any, any>> {
       );
     }
     return results;
-  }
-
-  async batchWrite(
-    items: Array<{ type: "put" | "delete"; item: InferSchema<S> | Key<S> }>,
-  ) {
-    if (!items.length) return;
-    const chunksOf25 = chunk(items, 25);
-    for (const chunkItems of chunksOf25) {
-      let unprocessed = chunkItems.map((op) => {
-        if (op.type === "put") {
-          const parsed = this.schema.fields.parse(op.item as InferSchema<S>);
-          return { PutRequest: { Item: this.marshall(parsed) } };
-        } else {
-          this.validateKey(op.item);
-          return { DeleteRequest: { Key: this.marshall(op.item) } };
-        }
-      });
-
-      let attempt = 0;
-      do {
-        const result = await this.sendCommand<any>(
-          new BatchWriteItemCommand({
-            RequestItems: { [this.tableName]: unprocessed },
-          }),
-        );
-        unprocessed = result.UnprocessedItems?.[this.tableName] || [];
-        if (unprocessed.length) await sleep(2 ** attempt * 50);
-        attempt++;
-      } while (unprocessed.length);
-    }
   }
 
   async batchGet(keys: Key<S>[]): Promise<InferSchema<S>[]> {
@@ -916,13 +738,11 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     }>,
   ) {
     if (!items.length) return;
+    const chunks = chunk(items, 25);
 
-    const chunksOf25 = chunk(items, 25);
-
-    for (const chunkItems of chunksOf25) {
+    for (const chunkItems of chunks) {
       const TransactItems = chunkItems.map(({ key, updates }) => {
         this.validateKey(key);
-
         const validatedUpdates: Partial<InferSchema<S>> = {};
         for (const k in updates) {
           const val = updates[k];
@@ -979,26 +799,213 @@ export class Model<S extends Schema<any, any, any, any, any>> {
     const items = await this.findMany(partitionKeyValue, sortKeyCondition);
     if (!items.length) return;
 
-    if (items.length <= 100) {
+    const ops = items.map((item) => ({
+      type: "delete" as const,
+      key: {
+        [this.partitionKey as string]:
+          item[this.partitionKey as keyof InferSchema<S>],
+        ...(this.sortKey
+          ? {
+              [this.sortKey as string]:
+                item[this.sortKey as keyof InferSchema<S>],
+            }
+          : {}),
+      } as Key<S>,
+    }));
+
+    if (ops.length <= 100) {
+      await this.transactWrite(ops);
+    } else {
+      await this.batchWrite(
+        ops.map((op) => ({ type: "delete", item: op.key })),
+      );
+    }
+  }
+
+  async deleteByIndex<
+    I extends
+      | keyof S["globalSecondaryIndexes"]
+      | keyof S["localSecondaryIndexes"],
+  >(indexName: I, keyValues: IndexKey<S, I>) {
+    const items = await this.findByIndex(indexName, keyValues);
+    if (!items.length) return;
+
+    const ops = items.map((item) => ({
+      key: {
+        [this.partitionKey as string]:
+          item[this.partitionKey as keyof InferSchema<S>],
+        ...(this.sortKey
+          ? {
+              [this.sortKey as string]:
+                item[this.sortKey as keyof InferSchema<S>],
+            }
+          : {}),
+      } as Key<S>,
+    }));
+
+    if (ops.length <= 100) {
       await this.transactWrite(
-        items.map((item) => ({
-          type: "delete",
-          key: {
-            [this.partitionKey]: item[this.partitionKey],
-            ...(this.sortKey ? { [this.sortKey]: item[this.sortKey] } : {}),
-          } as Key<S>,
-        })),
+        ops.map((op) => ({ type: "delete", key: op.key })),
       );
     } else {
-      console.warn("deleteMany is not atomic for >100 items");
-      const batchOps = items.map((item) => ({
-        type: "delete" as const,
-        item: {
-          [this.partitionKey]: item[this.partitionKey],
-          ...(this.sortKey ? { [this.sortKey]: item[this.sortKey] } : {}),
-        } as Key<S>,
-      }));
-      await this.batchWrite(batchOps);
+      await this.batchWrite(
+        ops.map((op) => ({ type: "delete", item: op.key })),
+      );
+    }
+  }
+
+  async updateByIndex<
+    I extends
+      | keyof S["globalSecondaryIndexes"]
+      | keyof S["localSecondaryIndexes"],
+  >(
+    indexName: I,
+    keyValues: IndexKey<S, I>,
+    updates: Partial<{
+      [K in keyof InferSchema<S>]: AtomicValue<InferSchema<S>[K]>;
+    }>,
+  ) {
+    const items = await this.findByIndex(indexName, keyValues);
+    if (!items.length) return;
+
+    const updateOps = items.map((item) => ({
+      key: {
+        [this.partitionKey as string]:
+          item[this.partitionKey as keyof InferSchema<S>],
+        ...(this.sortKey
+          ? {
+              [this.sortKey as string]:
+                item[this.sortKey as keyof InferSchema<S>],
+            }
+          : {}),
+      } as Key<S>,
+      updates,
+    }));
+
+    await this.updateMany(updateOps);
+  }
+
+  private async parallelScan(
+    parallelism: number,
+    options: Omit<Parameters<Model<S>["scanAll"]>[0], "parallelism">,
+  ) {
+    const scans = Array.from({ length: parallelism }, (_, segment) =>
+      this.scanAll({
+        ...options,
+        startKey: undefined,
+        segment,
+        totalSegments: parallelism,
+      }),
+    );
+    const allResults = await Promise.all(scans);
+    return { items: allResults.flatMap((r) => r.items), lastKey: null };
+  }
+
+  query(): QueryBuilder<S> {
+    return new QueryBuilder(this);
+  }
+
+  async transactWrite(
+    items: Array<
+      | { type: "put"; item: InferSchema<S>; condition?: string }
+      | {
+          type: "update";
+          key: Key<S>;
+          updates: Record<string, AtomicValue<any>>;
+          condition?: string;
+        }
+      | { type: "delete"; key: Key<S>; condition?: string }
+    >,
+  ) {
+    if (!items.length) return;
+    const chunks = chunk(items, 100);
+    for (const chunkItems of chunks) {
+      const TransactItems = chunkItems.map((op) => {
+        if (op.type === "put") {
+          const parsed = this.schema.fields.parse(op.item);
+          return {
+            Put: {
+              TableName: this.tableName,
+              Item: this.marshall(parsed),
+              ConditionExpression: op.condition || undefined,
+            },
+          };
+        }
+        if (op.type === "update") {
+          const {
+            UpdateExpression,
+            ExpressionAttributeNames,
+            ExpressionAttributeValues,
+          } = this.buildUpdateExpression(op.updates);
+
+          // Prepare Names: Ensure it's Record<string, string> or undefined
+          const names =
+            ExpressionAttributeNames &&
+            Object.keys(ExpressionAttributeNames).length > 0
+              ? (ExpressionAttributeNames as Record<string, string>)
+              : undefined;
+
+          // Prepare Values: Ensure it's Record<string, AttributeValue> or undefined
+          const values =
+            ExpressionAttributeValues &&
+            Object.keys(ExpressionAttributeValues).length > 0
+              ? (ExpressionAttributeValues as any)
+              : undefined;
+
+          return {
+            Update: {
+              TableName: this.tableName,
+              Key: this.marshall(op.key),
+              UpdateExpression: UpdateExpression ?? undefined,
+              ExpressionAttributeNames: names,
+              ExpressionAttributeValues: values,
+              ConditionExpression: op.condition || undefined,
+            },
+          };
+        }
+        return {
+          Delete: {
+            TableName: this.tableName,
+            Key: this.marshall(op.key),
+            ConditionExpression: op.condition || undefined,
+          },
+        };
+      });
+
+      await this.sendCommand<void>(
+        new TransactWriteItemsCommand({ TransactItems }),
+      );
+    }
+  }
+
+  async batchWrite(
+    items: Array<{ type: "put" | "delete"; item: InferSchema<S> | Key<S> }>,
+  ) {
+    if (!items.length) return;
+    const chunks = chunk(items, 25);
+    for (const chunkItems of chunks) {
+      let unprocessed = chunkItems.map((op) =>
+        op.type === "put"
+          ? {
+              PutRequest: {
+                Item: this.marshall(
+                  this.schema.fields.parse(op.item as InferSchema<S>),
+                ),
+              },
+            }
+          : { DeleteRequest: { Key: this.marshall(op.item) } },
+      );
+      let attempt = 0;
+      do {
+        const result = await this.sendCommand<any>(
+          new BatchWriteItemCommand({
+            RequestItems: { [this.tableName]: unprocessed },
+          }),
+        );
+        unprocessed = result.UnprocessedItems?.[this.tableName] || [];
+        if (unprocessed.length) await sleep(2 ** attempt * 50);
+        attempt++;
+      } while (unprocessed.length);
     }
   }
 }
